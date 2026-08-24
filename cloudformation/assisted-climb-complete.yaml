@@ -1,0 +1,833 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Assisted CLIMB - Complete AWS Infrastructure (Single Stack)'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'Assisted-CLIMB'
+  AlertEmail:
+    Type: String
+    Default: 'Sita.Thomas@cloudiqs.com'
+  DomainName:
+    Type: String
+    Default: 'assistedclimb.com'
+  DBInstanceClass:
+    Type: String
+    Default: 'db.t3.micro'
+    AllowedValues: ['db.t3.micro', 'db.t3.small']
+  MonthlyBudgetLimit:
+    Type: Number
+    Default: 100
+
+Resources:
+  # ============================================
+  # VPC AND NETWORKING
+  # ============================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-VPC'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-IGW'
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: '10.0.1.0/24'
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Public-AZ1'
+
+  PublicSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: '10.0.2.0/24'
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Public-AZ2'
+
+  PrivateSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: '10.0.10.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Private-AZ1'
+
+  PrivateSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: '10.0.20.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Private-AZ2'
+
+  DatabaseSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: '10.0.100.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-DB-AZ1'
+
+  DatabaseSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: '10.0.110.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-DB-AZ2'
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Public-RT'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetAZ1RTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetAZ1
+
+  PublicSubnetAZ2RTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetAZ2
+
+  # NAT Gateway (single AZ for cost optimization ~$32/month)
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: IGWAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-NAT-EIP'
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnetAZ1
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-NAT-Gateway'
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Private-RT'
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnetAZ1RTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetAZ1
+
+  PrivateSubnetAZ2RTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetAZ2
+
+  # VPC Endpoint for S3 (cost optimization - avoids NAT)
+  S3VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  # ============================================
+  # SECURITY GROUPS
+  # ============================================
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'ALB - Allow HTTP/HTTPS from internet'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ALB-SG'
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'ECS - Allow traffic from ALB only'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ECS-SG'
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'RDS - Allow PostgreSQL from ECS only'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref ECSSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-RDS-SG'
+
+  # ============================================
+  # IAM ROLES
+  # ============================================
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ECS-ExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:assisted-climb/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ECS-TaskRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AppPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:assisted-climb/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::assisted-climb-assets-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::assisted-climb-assets-${AWS::AccountId}/*'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-ai-*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-Lambda-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: AIAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:assisted-climb/*'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  # ============================================
+  # RDS DATABASE
+  # ============================================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: 'Assisted CLIMB DB subnets'
+      SubnetIds:
+        - !Ref DatabaseSubnetAZ1
+        - !Ref DatabaseSubnetAZ2
+
+  DBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: 'postgres15'
+      Description: 'Assisted CLIMB PostgreSQL parameters'
+      Parameters:
+        max_connections: '200'
+        log_min_duration_statement: '1000'
+        row_security: '1'
+
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: 'assisted-climb/database/credentials'
+      Description: 'RDS PostgreSQL credentials'
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "postgres"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub '${ProjectName}-db'
+      DBName: 'assisted_climb'
+      Engine: postgres
+      EngineVersion: '15.18'
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: 20
+      StorageType: gp3
+      StorageEncrypted: true
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      DBParameterGroupName: !Ref DBParameterGroup
+      MultiAZ: false
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'Sun:04:00-Sun:05:00'
+      PubliclyAccessible: false
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Database'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================
+  # ECS CLUSTER AND SERVICES
+  # ============================================
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+      CapacityProviders:
+        - FARGATE
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}/frontend'
+      RetentionInDays: 14
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}/backend'
+      RetentionInDays: 14
+
+  # ECR Repositories (names must be lowercase)
+  FrontendECR:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: 'assisted-climb-frontend'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},"action":{"type":"expire"}}]}
+
+  BackendECR:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: 'assisted-climb-backend'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},"action":{"type":"expire"}}]}
+
+  # Application Load Balancer
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ProjectName}-ALB'
+      Type: application
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnetAZ1
+        - !Ref PublicSubnetAZ2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-fe-tg'
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: ip
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-be-tg'
+      Port: 8080
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+
+  BackendListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 100
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values: ['/api/*', '/health', '/auth/*']
+
+  # ECS Task Definitions (placeholder images until we build)
+  FrontendTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-frontend'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: frontend
+          Image: 'nginx:alpine'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref FrontendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  BackendTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-backend'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: backend
+          Image: 'node:18-alpine'
+          Essential: true
+          Command:
+            - "node"
+            - "-e"
+            - "require('http').createServer((req,res)=>{res.writeHead(200);res.end('ok');}).listen(8080,()=>console.log('placeholder backend listening on 8080'));"
+          PortMappings:
+            - ContainerPort: 8080
+          Environment:
+            - Name: NODE_ENV
+              Value: production
+            - Name: PORT
+              Value: '8080'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  FrontendService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub '${ProjectName}-frontend-svc'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref FrontendTaskDef
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - !Ref PrivateSubnetAZ1
+            - !Ref PrivateSubnetAZ2
+      LoadBalancers:
+        - TargetGroupArn: !Ref FrontendTargetGroup
+          ContainerName: frontend
+          ContainerPort: 80
+
+  BackendService:
+    Type: AWS::ECS::Service
+    DependsOn: BackendListenerRule
+    Properties:
+      ServiceName: !Sub '${ProjectName}-backend-svc'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref BackendTaskDef
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - !Ref PrivateSubnetAZ1
+            - !Ref PrivateSubnetAZ2
+      LoadBalancers:
+        - TargetGroupArn: !Ref BackendTargetGroup
+          ContainerName: backend
+          ContainerPort: 8080
+
+  # ============================================
+  # S3 BUCKETS
+  # ============================================
+  AssetsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'assisted-climb-assets-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+
+  BackupsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'assisted-climb-backups-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveOldBackups
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+
+  # ============================================
+  # SECRETS FOR AI PROVIDERS
+  # ============================================
+  GoogleAISecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: 'assisted-climb/ai-keys/google'
+      Description: 'Google Gemini API key'
+      SecretString: '{"api_key": "REPLACE_WITH_GOOGLE_API_KEY"}'
+
+  MicrosoftAISecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: 'assisted-climb/ai-keys/microsoft'
+      Description: 'Microsoft Azure OpenAI credentials'
+      SecretString: '{"api_key": "REPLACE_WITH_MICROSOFT_KEY", "endpoint": "REPLACE_WITH_ENDPOINT"}'
+
+  SessionSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: 'assisted-climb/session/secret'
+      Description: 'Express session secret'
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludeCharacters: '"@/\'
+
+  # ============================================
+  # LAMBDA AI FUNCTIONS
+  # ============================================
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-ai'
+      RetentionInDays: 14
+
+  GoogleAIFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-ai-google'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref ProjectName
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return { statusCode: 200, body: JSON.stringify({ message: 'Google AI function placeholder - deploy actual code' }) };
+          };
+
+  BedrockAIFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-ai-bedrock'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref ProjectName
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return { statusCode: 200, body: JSON.stringify({ message: 'Bedrock AI function placeholder - deploy actual code' }) };
+          };
+
+  # ============================================
+  # MONITORING - SNS + BUDGET
+  # ============================================
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-alerts'
+      DisplayName: 'Assisted CLIMB Alerts'
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref AlertTopic
+      Endpoint: !Ref AlertEmail
+
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub '${ProjectName}-monthly'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+
+  # ============================================
+  # ROUTE 53 DNS
+  # ============================================
+  HostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref DomainName
+
+Outputs:
+  ALBDNS:
+    Description: 'Application Load Balancer URL'
+    Value: !Sub 'http://${ALB.DNSName}'
+
+  DatabaseEndpoint:
+    Description: 'RDS PostgreSQL Endpoint'
+    Value: !GetAtt Database.Endpoint.Address
+
+  DatabasePort:
+    Description: 'RDS PostgreSQL Port'
+    Value: !GetAtt Database.Endpoint.Port
+
+  FrontendECRUri:
+    Description: 'Frontend ECR Repository URI'
+    Value: !GetAtt FrontendECR.RepositoryUri
+
+  BackendECRUri:
+    Description: 'Backend ECR Repository URI'
+    Value: !GetAtt BackendECR.RepositoryUri
+
+  AssetsBucketName:
+    Description: 'S3 Assets Bucket'
+    Value: !Ref AssetsBucket
+
+  HostedZoneNameServers:
+    Description: 'Route 53 Name Servers (update your domain registrar)'
+    Value: !Join [', ', !GetAtt HostedZone.NameServers]
+
+  VPCId:
+    Description: 'VPC ID'
+    Value: !Ref VPC
+
+  ECSClusterName:
+    Description: 'ECS Cluster Name'
+    Value: !Ref ECSCluster

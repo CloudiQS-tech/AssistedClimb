@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "The Assisted Climb"
+version = "1.0.0"
+id = "artifacts/assisted-climb"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20452
+
+[services.development]
+run = "pnpm --filter @workspace/assisted-climb run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/assisted-climb", "run", "build" ]
+publicDir = "artifacts/assisted-climb/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20452"
+BASE_PATH = "/"

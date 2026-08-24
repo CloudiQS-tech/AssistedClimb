@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.kiro/
+
+# Build outputs
+dist/
+build/
+
+# Secrets
+.admin-secret
+
+# Logs
+*.log
+
+# Archives (too large for git)
+*.tar.gz
+
+# Temporary AWS debug files
+container-logs.json
+disk-usage.txt
+docker-df.txt
+docker-info.txt
+docker-prune.txt
+ecs-error.txt
+ecs-update-result.json
+ecs-update2.txt
+failed-task.json
+stopped-tasks.json
+svc-check.json
+svc-check2.json
+svc-status.json

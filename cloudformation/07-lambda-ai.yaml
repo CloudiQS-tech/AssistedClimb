@@ -1,0 +1,637 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Assisted CLIMB Lambda Functions for AI Integration'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'Assisted-CLIMB'
+    Description: 'Project name for resource tagging'
+
+  Environment:
+    Type: String
+    Default: 'Production'
+    AllowedValues: ['Development', 'Staging', 'Production']
+    Description: 'Environment name'
+
+Resources:
+  # Secrets for AI Provider API Keys
+  GoogleAISecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'assisted-climb/ai-keys/google'
+      Description: 'Google Gemini API keys for different organizations'
+      SecretString: !Sub |
+        {
+          "default_api_key": "REPLACE_WITH_GOOGLE_API_KEY",
+          "organizations": {}
+        }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Google-AI-Secret'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'AI-Integration'
+
+  MicrosoftAISecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'assisted-climb/ai-keys/microsoft'
+      Description: 'Microsoft Copilot API keys and endpoints for different organizations'
+      SecretString: !Sub |
+        {
+          "default_api_key": "REPLACE_WITH_MICROSOFT_API_KEY",
+          "default_endpoint": "REPLACE_WITH_AZURE_ENDPOINT",
+          "organizations": {}
+        }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Microsoft-AI-Secret'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'AI-Integration'
+
+  # Lambda Layer for AI Dependencies
+  AILambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub '${ProjectName}-ai-dependencies'
+      Description: 'Shared dependencies for AI Lambda functions'
+      Content:
+        S3Bucket: !Sub 'assisted-climb-assets-${AWS::AccountId}'
+        S3Key: 'lambda-layers/ai-dependencies.zip'  # Upload this separately
+      CompatibleRuntimes:
+        - nodejs18.x
+        - nodejs20.x
+      CompatibleArchitectures:
+        - x86_64
+
+  # Lambda Function for Google Gemini Integration
+  GoogleAIFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-ai-google'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          const { GoogleGenerativeAI } = require('@google/generative-ai');
+          const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
+          
+          const secretsManager = new SecretsManagerClient({ region: process.env.AWS_REGION });
+          
+          exports.handler = async (event) => {
+            try {
+              const { organizationId, prompt, context, sessionId } = JSON.parse(event.body);
+              
+              // Get organization-specific API key
+              const secretName = `assisted-climb/ai-keys/google`;
+              const secret = await secretsManager.send(new GetSecretValueCommand({
+                SecretId: secretName
+              }));
+              
+              const config = JSON.parse(secret.SecretString);
+              const apiKey = config.organizations[organizationId]?.api_key || config.default_api_key;
+              
+              if (!apiKey || apiKey.startsWith('REPLACE_WITH_')) {
+                throw new Error('Google AI API key not configured');
+              }
+              
+              // Initialize Google AI
+              const genAI = new GoogleGenerativeAI(apiKey);
+              const model = genAI.getGenerativeModel({ 
+                model: 'gemini-pro',
+                safetySettings: [
+                  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+                  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+                  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+                  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' }
+                ]
+              });
+              
+              // Build educational prompt
+              const enhancedPrompt = buildEducationalPrompt(prompt, context);
+              
+              // Generate response
+              const result = await model.generateContent(enhancedPrompt);
+              const response = result.response.text();
+              
+              // Apply safety filters
+              const filteredResponse = applySafetyFilters(response);
+              
+              // Log interaction for audit
+              await logAIInteraction({
+                organizationId,
+                sessionId,
+                provider: 'google',
+                prompt: prompt,
+                response: filteredResponse,
+                context: context,
+                timestamp: new Date().toISOString(),
+                requestId: event.requestContext?.requestId
+              });
+              
+              return {
+                statusCode: 200,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Headers': 'Content-Type',
+                  'Access-Control-Allow-Methods': 'POST, OPTIONS'
+                },
+                body: JSON.stringify({
+                  response: filteredResponse,
+                  provider: 'google',
+                  timestamp: new Date().toISOString()
+                })
+              };
+              
+            } catch (error) {
+              console.error('Google AI Function Error:', error);
+              return {
+                statusCode: 500,
+                body: JSON.stringify({
+                  error: 'AI processing failed',
+                  message: error.message
+                })
+              };
+            }
+          };
+          
+          function buildEducationalPrompt(prompt, context) {
+            const stageInstructions = {
+              MAP: 'Help the student plan their enquiry and understand the context. Guide them to think about what they need to research and how to approach the topic systematically.',
+              TORCH: 'Assist with exploration and questioning. Encourage critical thinking and help generate insightful questions rather than providing direct answers.',
+              COMPASS: 'Support critical evaluation and verification. Help students assess sources, identify biases, and develop well-reasoned conclusions.'
+            };
+            
+            return `Educational Context: You are helping a student in the ${context.stage} stage of their learning journey.
+            
+            Stage Purpose: ${stageInstructions[context.stage] || 'General educational support'}
+            
+            Student Question: ${prompt}
+            
+            Educational Guidelines:
+            - Encourage critical thinking and discovery rather than giving direct answers
+            - Ask follow-up questions to deepen understanding
+            - Suggest verification methods and additional sources
+            - Maintain an encouraging and supportive tone
+            - Focus on developing meta-literacy skills
+            - Help students become better users of AI tools
+            
+            Response Guidelines:
+            - Keep responses concise and age-appropriate
+            - Encourage students to think for themselves
+            - Provide guidance on how to verify information
+            - Suggest next steps for further exploration`;
+          }
+          
+          function applySafetyFilters(response) {
+            // Basic safety filtering
+            if (response.length > 2000) {
+              response = response.substring(0, 1900) + '... [Response truncated for safety]';
+            }
+            return response;
+          }
+          
+          async function logAIInteraction(interaction) {
+            // Log to CloudWatch for audit
+            console.log('AI Interaction:', JSON.stringify(interaction));
+          }
+      Layers:
+        - !Ref AILambdaLayer
+      Role:
+        Fn::ImportValue: !Sub '${ProjectName}-Lambda-AI-ExecutionRole-ARN'
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          PROJECT_NAME: !Ref ProjectName
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub '${ProjectName}-Lambda-SecurityGroup'
+        SubnetIds:
+          - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ1'
+          - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ2'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-AI-Google-Function'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'AI-Google'
+
+  # Lambda Function for Microsoft Copilot Integration  
+  MicrosoftAIFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-ai-microsoft'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          const { OpenAI } = require('openai');
+          const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
+          
+          const secretsManager = new SecretsManagerClient({ region: process.env.AWS_REGION });
+          
+          exports.handler = async (event) => {
+            try {
+              const { organizationId, prompt, context, sessionId } = JSON.parse(event.body);
+              
+              // Get organization-specific API configuration
+              const secretName = `assisted-climb/ai-keys/microsoft`;
+              const secret = await secretsManager.send(new GetSecretValueCommand({
+                SecretId: secretName
+              }));
+              
+              const config = JSON.parse(secret.SecretString);
+              const orgConfig = config.organizations[organizationId] || {
+                api_key: config.default_api_key,
+                endpoint: config.default_endpoint
+              };
+              
+              if (!orgConfig.api_key || orgConfig.api_key.startsWith('REPLACE_WITH_')) {
+                throw new Error('Microsoft AI API key not configured');
+              }
+              
+              // Initialize OpenAI client with Azure configuration
+              const openai = new OpenAI({
+                apiKey: orgConfig.api_key,
+                baseURL: orgConfig.endpoint
+              });
+              
+              // Build educational prompt
+              const enhancedPrompt = buildEducationalPrompt(prompt, context);
+              
+              // Generate response
+              const completion = await openai.chat.completions.create({
+                model: 'gpt-4',
+                messages: [{ 
+                  role: 'user', 
+                  content: enhancedPrompt 
+                }],
+                max_tokens: 2048,
+                temperature: 0.7,
+                top_p: 0.9
+              });
+              
+              const response = completion.choices[0].message.content;
+              
+              // Apply safety filters
+              const filteredResponse = applySafetyFilters(response);
+              
+              // Log interaction for audit
+              await logAIInteraction({
+                organizationId,
+                sessionId,
+                provider: 'microsoft',
+                prompt: prompt,
+                response: filteredResponse,
+                context: context,
+                timestamp: new Date().toISOString(),
+                requestId: event.requestContext?.requestId
+              });
+              
+              return {
+                statusCode: 200,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Headers': 'Content-Type',
+                  'Access-Control-Allow-Methods': 'POST, OPTIONS'
+                },
+                body: JSON.stringify({
+                  response: filteredResponse,
+                  provider: 'microsoft',
+                  timestamp: new Date().toISOString()
+                })
+              };
+              
+            } catch (error) {
+              console.error('Microsoft AI Function Error:', error);
+              return {
+                statusCode: 500,
+                body: JSON.stringify({
+                  error: 'AI processing failed',
+                  message: error.message
+                })
+              };
+            }
+          };
+          
+          function buildEducationalPrompt(prompt, context) {
+            // Same educational prompt building logic as Google function
+            const stageInstructions = {
+              MAP: 'Help the student plan their enquiry and understand the context.',
+              TORCH: 'Assist with exploration and questioning. Encourage critical thinking.',
+              COMPASS: 'Support critical evaluation and verification.'
+            };
+            
+            return `Educational Context: You are helping a student in the ${context.stage} stage.
+            
+            Stage Purpose: ${stageInstructions[context.stage] || 'General support'}
+            Student Question: ${prompt}
+            
+            Guidelines:
+            - Encourage critical thinking over direct answers
+            - Ask follow-up questions
+            - Suggest verification methods
+            - Maintain supportive tone
+            - Focus on meta-literacy skills`;
+          }
+          
+          function applySafetyFilters(response) {
+            if (response.length > 2000) {
+              response = response.substring(0, 1900) + '... [Response truncated for safety]';
+            }
+            return response;
+          }
+          
+          async function logAIInteraction(interaction) {
+            console.log('AI Interaction:', JSON.stringify(interaction));
+          }
+      Layers:
+        - !Ref AILambdaLayer
+      Role:
+        Fn::ImportValue: !Sub '${ProjectName}-Lambda-AI-ExecutionRole-ARN'
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          PROJECT_NAME: !Ref ProjectName
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub '${ProjectName}-Lambda-SecurityGroup'
+        SubnetIds:
+          - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ1'
+          - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ2'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-AI-Microsoft-Function'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'AI-Microsoft'
+
+  # Lambda Function for Amazon Bedrock Integration
+  BedrockAIFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-ai-bedrock'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
+          
+          const bedrock = new BedrockRuntimeClient({ region: process.env.AWS_REGION });
+          
+          exports.handler = async (event) => {
+            try {
+              const { organizationId, prompt, context, sessionId } = JSON.parse(event.body);
+              
+              // Build educational prompt
+              const enhancedPrompt = buildEducationalPrompt(prompt, context);
+              
+              // Prepare Bedrock request
+              const payload = {
+                prompt: `\n\nHuman: ${enhancedPrompt}\n\nAssistant:`,
+                max_tokens_to_sample: 2048,
+                temperature: 0.7,
+                top_p: 0.9
+              };
+              
+              // Call Bedrock
+              const command = new InvokeModelCommand({
+                modelId: 'anthropic.claude-3-sonnet-20240229-v1:0',
+                contentType: 'application/json',
+                accept: 'application/json',
+                body: JSON.stringify(payload)
+              });
+              
+              const response = await bedrock.send(command);
+              const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+              const aiResponse = responseBody.completion;
+              
+              // Apply safety filters
+              const filteredResponse = applySafetyFilters(aiResponse);
+              
+              // Log interaction for audit
+              await logAIInteraction({
+                organizationId,
+                sessionId,
+                provider: 'bedrock',
+                prompt: prompt,
+                response: filteredResponse,
+                context: context,
+                timestamp: new Date().toISOString(),
+                requestId: event.requestContext?.requestId
+              });
+              
+              return {
+                statusCode: 200,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Headers': 'Content-Type',
+                  'Access-Control-Allow-Methods': 'POST, OPTIONS'
+                },
+                body: JSON.stringify({
+                  response: filteredResponse,
+                  provider: 'bedrock',
+                  timestamp: new Date().toISOString()
+                })
+              };
+              
+            } catch (error) {
+              console.error('Bedrock AI Function Error:', error);
+              return {
+                statusCode: 500,
+                body: JSON.stringify({
+                  error: 'AI processing failed',
+                  message: error.message
+                })
+              };
+            }
+          };
+          
+          function buildEducationalPrompt(prompt, context) {
+            const stageInstructions = {
+              MAP: 'Help the student plan their enquiry systematically.',
+              TORCH: 'Assist with exploration and critical questioning.',
+              COMPASS: 'Support critical evaluation and source verification.'
+            };
+            
+            return `You are an educational AI assistant helping a student in the ${context.stage} learning stage.
+            
+            Context: ${stageInstructions[context.stage] || 'General educational support'}
+            Student Question: ${prompt}
+            
+            Please provide guidance that:
+            - Encourages critical thinking and self-discovery
+            - Asks thoughtful follow-up questions
+            - Suggests verification methods for information
+            - Maintains an encouraging, supportive tone
+            - Helps develop meta-literacy skills
+            
+            Focus on teaching the student how to use AI tools effectively rather than just providing answers.`;
+          }
+          
+          function applySafetyFilters(response) {
+            if (response.length > 2000) {
+              response = response.substring(0, 1900) + '... [Response truncated for safety]';
+            }
+            return response;
+          }
+          
+          async function logAIInteraction(interaction) {
+            console.log('AI Interaction:', JSON.stringify(interaction));
+          }
+      Role:
+        Fn::ImportValue: !Sub '${ProjectName}-Lambda-AI-ExecutionRole-ARN'
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          PROJECT_NAME: !Ref ProjectName
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub '${ProjectName}-Lambda-SecurityGroup'
+        SubnetIds:
+          - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ1'
+          - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ2'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-AI-Bedrock-Function'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'AI-Bedrock'
+
+  # CloudWatch Log Groups for Lambda Functions
+  GoogleAILogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${GoogleAIFunction}'
+      RetentionInDays: 14
+
+  MicrosoftAILogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${MicrosoftAIFunction}'
+      RetentionInDays: 14
+
+  BedrockAILogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${BedrockAIFunction}'
+      RetentionInDays: 14
+
+  # CloudWatch Alarms for Lambda Monitoring
+  GoogleAIErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-GoogleAI-Errors'
+      AlarmDescription: 'High error rate in Google AI Lambda function'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref GoogleAIFunction
+      AlarmActions:
+        - Fn::ImportValue: 'AssistedClimb-BillingAlertTopicArn'
+
+  MicrosoftAIErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-MicrosoftAI-Errors'
+      AlarmDescription: 'High error rate in Microsoft AI Lambda function'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MicrosoftAIFunction
+      AlarmActions:
+        - Fn::ImportValue: 'AssistedClimb-BillingAlertTopicArn'
+
+  BedrockAIErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-BedrockAI-Errors'
+      AlarmDescription: 'High error rate in Bedrock AI Lambda function'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref BedrockAIFunction
+      AlarmActions:
+        - Fn::ImportValue: 'AssistedClimb-BillingAlertTopicArn'
+
+Outputs:
+  GoogleAIFunctionArn:
+    Description: 'Google AI Lambda Function ARN'
+    Value: !GetAtt GoogleAIFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-GoogleAI-Function-ARN'
+
+  MicrosoftAIFunctionArn:
+    Description: 'Microsoft AI Lambda Function ARN'
+    Value: !GetAtt MicrosoftAIFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-MicrosoftAI-Function-ARN'
+
+  BedrockAIFunctionArn:
+    Description: 'Bedrock AI Lambda Function ARN'
+    Value: !GetAtt BedrockAIFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-BedrockAI-Function-ARN'
+
+  GoogleAIFunctionName:
+    Description: 'Google AI Lambda Function Name'
+    Value: !Ref GoogleAIFunction
+    Export:
+      Name: !Sub '${ProjectName}-GoogleAI-Function-Name'
+
+  MicrosoftAIFunctionName:
+    Description: 'Microsoft AI Lambda Function Name'
+    Value: !Ref MicrosoftAIFunction
+    Export:
+      Name: !Sub '${ProjectName}-MicrosoftAI-Function-Name'
+
+  BedrockAIFunctionName:
+    Description: 'Bedrock AI Lambda Function Name'
+    Value: !Ref BedrockAIFunction
+    Export:
+      Name: !Sub '${ProjectName}-BedrockAI-Function-Name'
+
+  GoogleAISecretArn:
+    Description: 'Google AI Secret ARN'
+    Value: !Ref GoogleAISecret
+    Export:
+      Name: !Sub '${ProjectName}-GoogleAI-Secret-ARN'
+
+  MicrosoftAISecretArn:
+    Description: 'Microsoft AI Secret ARN'
+    Value: !Ref MicrosoftAISecret
+    Export:
+      Name: !Sub '${ProjectName}-MicrosoftAI-Secret-ARN'

@@ -1,0 +1,42 @@
+{
+  "family": "Assisted-CLIMB-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::430367037753:role/Assisted-CLIMB-ECS-ExecutionRole",
+  "taskRoleArn": "arn:aws:iam::430367037753:role/Assisted-CLIMB-ECS-TaskRole",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "430367037753.dkr.ecr.eu-west-2.amazonaws.com/assisted-climb-backend:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "PORT", "value": "8080" },
+        { "name": "AWS_REGION", "value": "eu-west-2" },
+        { "name": "DATABASE_URL", "value": "postgresql://postgres:_%28DLR9h%3C%26Z2UM%7Bd%5Bi%25G%5D%3Az%21DbaWa%28uT%60@assisted-climb-db.cf48wiai0got.eu-west-2.rds.amazonaws.com:5432/assisted_climb?sslmode=no-verify" },
+        { "name": "SESSION_SECRET", "value": "hafsh;kfhsakhdksj`" },
+        { "name": "PLATFORM_ADMIN_SECRET", "value": "hafsh;kfhsakhdksj`" },
+        { "name": "SITE_PASSWORD", "value": "CatsandDogs" },
+        { "name": "ALLOWED_ORIGINS", "value": "https://assistedclimb.cloudiqs.com" },
+        { "name": "AI_PROVIDER", "value": "gemini" },
+        { "name": "AI_API_KEY", "value": "" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/Assisted-CLIMB/backend",
+          "awslogs-region": "eu-west-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

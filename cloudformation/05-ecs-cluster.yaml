@@ -1,0 +1,494 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Assisted CLIMB ECS Fargate Cluster and Application Services'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'Assisted-CLIMB'
+    Description: 'Project name for resource tagging'
+
+  Environment:
+    Type: String
+    Default: 'Production'
+    AllowedValues: ['Development', 'Staging', 'Production']
+    Description: 'Environment name'
+
+  FrontendImageUri:
+    Type: String
+    Default: 'nginx:alpine'
+    Description: 'Frontend container image URI (will be updated after ECR setup)'
+
+  BackendImageUri:
+    Type: String
+    Default: 'node:18-alpine'
+    Description: 'Backend container image URI (will be updated after ECR setup)'
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+    Description: 'Desired number of tasks'
+
+  FrontendCPU:
+    Type: Number
+    Default: 256
+    AllowedValues: [256, 512, 1024]
+    Description: 'Frontend container CPU units'
+
+  FrontendMemory:
+    Type: Number
+    Default: 512
+    AllowedValues: [512, 1024, 2048]
+    Description: 'Frontend container memory (MB)'
+
+  BackendCPU:
+    Type: Number
+    Default: 512
+    AllowedValues: [256, 512, 1024]
+    Description: 'Backend container CPU units'
+
+  BackendMemory:
+    Type: Number
+    Default: 1024
+    AllowedValues: [512, 1024, 2048]
+    Description: 'Backend container memory (MB)'
+
+Resources:
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 0  # Disable SPOT for now to ensure reliability
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ECS-Cluster'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CloudWatch Log Groups
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}/frontend'
+      RetentionInDays: 14
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Frontend-Logs'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}/backend'
+      RetentionInDays: 14
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Backend-Logs'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ECS Task Definitions
+  FrontendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-frontend'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref FrontendCPU
+      Memory: !Ref FrontendMemory
+      ExecutionRoleArn:
+        Fn::ImportValue: !Sub '${ProjectName}-ECS-TaskExecutionRole-ARN'
+      TaskRoleArn:
+        Fn::ImportValue: !Sub '${ProjectName}-ECS-TaskRole-ARN'
+      ContainerDefinitions:
+        - Name: frontend
+          Image: !Ref FrontendImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+          Environment:
+            - Name: NODE_ENV
+              Value: 'production'
+            - Name: API_URL
+              Value: 'https://api.assistedclimb.education'
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - 'curl -f http://localhost/ || exit 1'
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref FrontendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: 'ecs'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Frontend-TaskDefinition'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-backend'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref BackendCPU
+      Memory: !Ref BackendMemory
+      ExecutionRoleArn:
+        Fn::ImportValue: !Sub '${ProjectName}-ECS-TaskExecutionRole-ARN'
+      TaskRoleArn:
+        Fn::ImportValue: !Sub '${ProjectName}-ECS-TaskRole-ARN'
+      ContainerDefinitions:
+        - Name: backend
+          Image: !Ref BackendImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: NODE_ENV
+              Value: 'production'
+            - Name: PORT
+              Value: '8080'
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+          Secrets:
+            - Name: DATABASE_URL
+              ValueFrom:
+                Fn::ImportValue: !Sub '${ProjectName}-Database-ConnectionSecret-ARN'
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - 'curl -f http://localhost:8080/health || exit 1'
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: 'ecs'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Backend-TaskDefinition'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ECS Services
+  FrontendService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub '${ProjectName}-frontend-service'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref FrontendTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: 'LATEST'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - Fn::ImportValue: !Sub '${ProjectName}-ECS-SecurityGroup'
+          Subnets:
+            - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ1'
+            - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ2'
+      LoadBalancers:
+        - TargetGroupArn: !Ref FrontendTargetGroup
+          ContainerName: frontend
+          ContainerPort: 80
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      EnableExecuteCommand: true  # For debugging
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Frontend-Service'
+        - Key: Project
+          Value: !Ref ProjectName
+    DependsOn: 
+      - FrontendTargetGroup
+      - ALBListener
+
+  BackendService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub '${ProjectName}-backend-service'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref BackendTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: 'LATEST'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - Fn::ImportValue: !Sub '${ProjectName}-ECS-SecurityGroup'
+          Subnets:
+            - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ1'
+            - Fn::ImportValue: !Sub '${ProjectName}-PrivateSubnet-AZ2'
+      LoadBalancers:
+        - TargetGroupArn: !Ref BackendTargetGroup
+          ContainerName: backend
+          ContainerPort: 8080
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      EnableExecuteCommand: true  # For debugging
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Backend-Service'
+        - Key: Project
+          Value: !Ref ProjectName
+    DependsOn: 
+      - BackendTargetGroup
+      - ALBListener
+
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ProjectName}-ALB'
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - Fn::ImportValue: !Sub '${ProjectName}-PublicSubnet-AZ1'
+        - Fn::ImportValue: !Sub '${ProjectName}-PublicSubnet-AZ2'
+      SecurityGroups:
+        - Fn::ImportValue: !Sub '${ProjectName}-ALB-SecurityGroup'
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+        - Key: routing.http2.enabled
+          Value: 'true'
+        - Key: access_logs.s3.enabled
+          Value: 'false'  # Enable later with S3 bucket
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ALB'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Target Groups
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-frontend-tg'
+      Port: 80
+      Protocol: HTTP
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-VPC-ID'
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+        - Key: stickiness.enabled
+          Value: 'false'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Frontend-TargetGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-backend-tg'
+      Port: 8080
+      Protocol: HTTP
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-VPC-ID'
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+        - Key: stickiness.enabled
+          Value: 'true'  # Session stickiness for API
+        - Key: stickiness.type
+          Value: 'lb_cookie'
+        - Key: stickiness.lb_cookie.duration_seconds
+          Value: '86400'  # 24 hours
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Backend-TargetGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ALB Listeners
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # ALB Listener Rules
+  BackendListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/api/*'
+            - '/health'
+            - '/auth/*'
+      ListenerArn: !Ref ALBListener
+      Priority: 100
+
+  # Auto Scaling
+  FrontendAutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ResourceId: !Sub 'service/${ECSCluster}/${FrontendService.Name}'
+      ScalableDimension: ecs:service:DesiredCount
+      MinCapacity: 1
+      MaxCapacity: 5
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+
+  BackendAutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ResourceId: !Sub 'service/${ECSCluster}/${BackendService.Name}'
+      ScalableDimension: ecs:service:DesiredCount
+      MinCapacity: 1
+      MaxCapacity: 5
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+
+  # Auto Scaling Policies
+  FrontendScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-frontend-scaling-policy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref FrontendAutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70.0
+        ScaleOutCooldown: 300
+        ScaleInCooldown: 300
+
+  BackendScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-backend-scaling-policy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref BackendAutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70.0
+        ScaleOutCooldown: 300
+        ScaleInCooldown: 300
+
+Outputs:
+  ECSClusterName:
+    Description: 'ECS Cluster Name'
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub '${ProjectName}-ECS-Cluster-Name'
+
+  ECSClusterArn:
+    Description: 'ECS Cluster ARN'
+    Value: !GetAtt ECSCluster.Arn
+    Export:
+      Name: !Sub '${ProjectName}-ECS-Cluster-ARN'
+
+  ALBDNSName:
+    Description: 'Application Load Balancer DNS Name'
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${ProjectName}-ALB-DNSName'
+
+  ALBHostedZoneId:
+    Description: 'Application Load Balancer Hosted Zone ID'
+    Value: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID
+    Export:
+      Name: !Sub '${ProjectName}-ALB-HostedZoneId'
+
+  ALBArn:
+    Description: 'Application Load Balancer ARN'
+    Value: !Ref ApplicationLoadBalancer
+    Export:
+      Name: !Sub '${ProjectName}-ALB-ARN'
+
+  FrontendServiceArn:
+    Description: 'Frontend ECS Service ARN'
+    Value: !Ref FrontendService
+    Export:
+      Name: !Sub '${ProjectName}-Frontend-Service-ARN'
+
+  BackendServiceArn:
+    Description: 'Backend ECS Service ARN'
+    Value: !Ref BackendService
+    Export:
+      Name: !Sub '${ProjectName}-Backend-Service-ARN'
+
+  FrontendTargetGroupArn:
+    Description: 'Frontend Target Group ARN'
+    Value: !Ref FrontendTargetGroup
+    Export:
+      Name: !Sub '${ProjectName}-Frontend-TargetGroup-ARN'
+
+  BackendTargetGroupArn:
+    Description: 'Backend Target Group ARN'
+    Value: !Ref BackendTargetGroup
+    Export:
+      Name: !Sub '${ProjectName}-Backend-TargetGroup-ARN'

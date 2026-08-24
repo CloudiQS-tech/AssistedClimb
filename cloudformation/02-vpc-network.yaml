@@ -1,0 +1,452 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Assisted CLIMB VPC and Network Infrastructure'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'Assisted-CLIMB'
+    Description: 'Project name for resource tagging'
+  
+  Environment:
+    Type: String
+    Default: 'Production'
+    AllowedValues: ['Development', 'Staging', 'Production']
+    Description: 'Environment name'
+
+  VpcCidr:
+    Type: String
+    Default: '10.0.0.0/16'
+    Description: 'CIDR block for VPC'
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-VPC'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-IGW'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # Public Subnets (for ALB and NAT Gateways)
+  PublicSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: '10.0.1.0/24'
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Public-Subnet-AZ1'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Type
+          Value: 'Public'
+
+  PublicSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: '10.0.2.0/24'
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Public-Subnet-AZ2'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Type
+          Value: 'Public'
+
+  # Private Subnets (for ECS containers)
+  PrivateSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: '10.0.10.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Private-Subnet-AZ1'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Type
+          Value: 'Private'
+
+  PrivateSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: '10.0.20.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Private-Subnet-AZ2'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Type
+          Value: 'Private'
+
+  # Database Subnets (for RDS)
+  DatabaseSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: '10.0.100.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Database-Subnet-AZ1'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Type
+          Value: 'Database'
+
+  DatabaseSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: '10.0.110.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Database-Subnet-AZ2'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Type
+          Value: 'Database'
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Public-RouteTable'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PrivateRouteTableAZ1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Private-RouteTable-AZ1'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PrivateRouteTableAZ2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Private-RouteTable-AZ2'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  DatabaseRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Database-RouteTable'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Routes
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+
+  # Route Table Associations
+  PublicSubnetAZ1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetAZ1
+
+  PublicSubnetAZ2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetAZ2
+
+  PrivateSubnetAZ1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAZ1
+      SubnetId: !Ref PrivateSubnetAZ1
+
+  PrivateSubnetAZ2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAZ2
+      SubnetId: !Ref PrivateSubnetAZ2
+
+  DatabaseSubnetAZ1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DatabaseRouteTable
+      SubnetId: !Ref DatabaseSubnetAZ1
+
+  DatabaseSubnetAZ2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DatabaseRouteTable
+      SubnetId: !Ref DatabaseSubnetAZ2
+
+  # VPC Endpoints for Cost Optimization (avoid NAT Gateway costs)
+  S3VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTableAZ1
+        - !Ref PrivateRouteTableAZ2
+        - !Ref DatabaseRouteTable
+
+  SecretsManagerVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnetAZ1
+        - !Ref PrivateSubnetAZ2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  # Security Groups
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-ALB-SecurityGroup'
+      GroupDescription: 'Security group for Application Load Balancer'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: '0.0.0.0/0'
+          Description: 'HTTP from anywhere'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: '0.0.0.0/0'
+          Description: 'HTTPS from anywhere'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ALB-SecurityGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-ECS-SecurityGroup'
+      GroupDescription: 'Security group for ECS containers'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: 'HTTP from ALB'
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: 'Backend API from ALB'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: '0.0.0.0/0'
+          Description: 'All outbound traffic'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ECS-SecurityGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-RDS-SecurityGroup'
+      GroupDescription: 'Security group for RDS PostgreSQL'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref ECSSecurityGroup
+          Description: 'PostgreSQL from ECS'
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: 'PostgreSQL from Lambda'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-RDS-SecurityGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-Lambda-SecurityGroup'
+      GroupDescription: 'Security group for Lambda functions'
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: '0.0.0.0/0'
+          Description: 'All outbound traffic for AI APIs'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Lambda-SecurityGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  VPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-VPCEndpoint-SecurityGroup'
+      GroupDescription: 'Security group for VPC endpoints'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref ECSSecurityGroup
+          Description: 'HTTPS from ECS'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: 'HTTPS from Lambda'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-VPCEndpoint-SecurityGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Database Subnet Group
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${ProjectName}-database-subnet-group'
+      DBSubnetGroupDescription: 'Database subnets for Assisted CLIMB'
+      SubnetIds:
+        - !Ref DatabaseSubnetAZ1
+        - !Ref DatabaseSubnetAZ2
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-DatabaseSubnetGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  VPCId:
+    Description: 'VPC ID'
+    Value: !Ref VPC
+    Export:
+      Name: !Sub '${ProjectName}-VPC-ID'
+
+  PublicSubnetAZ1Id:
+    Description: 'Public Subnet AZ1 ID'
+    Value: !Ref PublicSubnetAZ1
+    Export:
+      Name: !Sub '${ProjectName}-PublicSubnet-AZ1'
+
+  PublicSubnetAZ2Id:
+    Description: 'Public Subnet AZ2 ID'
+    Value: !Ref PublicSubnetAZ2
+    Export:
+      Name: !Sub '${ProjectName}-PublicSubnet-AZ2'
+
+  PrivateSubnetAZ1Id:
+    Description: 'Private Subnet AZ1 ID'
+    Value: !Ref PrivateSubnetAZ1
+    Export:
+      Name: !Sub '${ProjectName}-PrivateSubnet-AZ1'
+
+  PrivateSubnetAZ2Id:
+    Description: 'Private Subnet AZ2 ID'
+    Value: !Ref PrivateSubnetAZ2
+    Export:
+      Name: !Sub '${ProjectName}-PrivateSubnet-AZ2'
+
+  DatabaseSubnetAZ1Id:
+    Description: 'Database Subnet AZ1 ID'
+    Value: !Ref DatabaseSubnetAZ1
+    Export:
+      Name: !Sub '${ProjectName}-DatabaseSubnet-AZ1'
+
+  DatabaseSubnetAZ2Id:
+    Description: 'Database Subnet AZ2 ID'
+    Value: !Ref DatabaseSubnetAZ2
+    Export:
+      Name: !Sub '${ProjectName}-DatabaseSubnet-AZ2'
+
+  DatabaseSubnetGroupName:
+    Description: 'Database Subnet Group Name'
+    Value: !Ref DatabaseSubnetGroup
+    Export:
+      Name: !Sub '${ProjectName}-DatabaseSubnetGroup'
+
+  ALBSecurityGroupId:
+    Description: 'ALB Security Group ID'
+    Value: !Ref ALBSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-ALB-SecurityGroup'
+
+  ECSSecurityGroupId:
+    Description: 'ECS Security Group ID'
+    Value: !Ref ECSSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-ECS-SecurityGroup'
+
+  RDSSecurityGroupId:
+    Description: 'RDS Security Group ID'
+    Value: !Ref RDSSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-RDS-SecurityGroup'
+
+  LambdaSecurityGroupId:
+    Description: 'Lambda Security Group ID'
+    Value: !Ref LambdaSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-Lambda-SecurityGroup'

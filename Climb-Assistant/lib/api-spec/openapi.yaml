@@ -1,0 +1,1094 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: auth
+    description: Teacher authentication
+  - name: teacher
+    description: Teacher operations
+  - name: student
+    description: Student operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /auth/register:
+    post:
+      operationId: registerTeacher
+      tags: [auth]
+      summary: Register a teacher
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeacherRegistration"
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherProfile"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      operationId: loginTeacher
+      tags: [auth]
+      summary: Log in as a teacher
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeacherCredentials"
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherProfile"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      operationId: getTeacherMe
+      tags: [auth]
+      summary: Get current teacher
+      responses:
+        "200":
+          description: Current teacher
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherProfile"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/logout:
+    post:
+      operationId: logoutTeacher
+      tags: [auth]
+      summary: Log out
+      responses:
+        "204":
+          description: Logged out
+
+  /teacher/classes:
+    post:
+      operationId: createClass
+      tags: [teacher]
+      summary: Create a class
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClassInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassRecord"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      operationId: listClasses
+      tags: [teacher]
+      summary: List teacher's classes
+      responses:
+        "200":
+          description: List of classes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ClassRecord"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}:
+    get:
+      operationId: getClass
+      tags: [teacher]
+      summary: Get class detail
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Class detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassDetail"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteClass
+      tags: [teacher]
+      summary: Delete a class and all associated data
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Class deleted
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/task:
+    get:
+      operationId: getClassTask
+      tags: [teacher]
+      summary: Get the task for a class
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskRecord"
+        "404":
+          description: No task set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      operationId: upsertClassTask
+      tags: [teacher]
+      summary: Create or update the task for a class
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskInput"
+      responses:
+        "200":
+          description: Saved task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskRecord"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students:
+    get:
+      operationId: listClassStudents
+      tags: [teacher]
+      summary: List students in a class
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of student sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StudentSummary"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students/{sessionId}/reset-pin:
+    post:
+      operationId: resetStudentPin
+      tags: [teacher]
+      summary: Reset a student's PIN so they can set a new one on next join
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: PIN cleared
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students/{sessionId}:
+    get:
+      operationId: getStudentDetail
+      tags: [teacher]
+      summary: Get full student session detail
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Student detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentDetail"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/task:
+    get:
+      operationId: getStudentTask
+      tags: [student]
+      summary: Get the task for the student's class
+      responses:
+        "200":
+          description: Task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskRecord"
+        "404":
+          description: No task set for this class
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/check-join:
+    post:
+      operationId: checkStudentJoin
+      tags: [student]
+      summary: Check whether a student name already exists in a class
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckStudentJoinInput"
+      responses:
+        "200":
+          description: Check result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckJoinResult"
+        "404":
+          description: Class code not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/join:
+    post:
+      operationId: studentJoin
+      tags: [student]
+      summary: Join a class as a student (create new session or reconnect with PIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudentJoinInput"
+      responses:
+        "200":
+          description: Session created or reconnected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentSessionInfo"
+        "401":
+          description: Incorrect PIN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Class code not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/session:
+    get:
+      operationId: getStudentSession
+      tags: [student]
+      summary: Get current student session
+      responses:
+        "200":
+          description: Current session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentSessionInfo"
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/stages:
+    get:
+      operationId: getStudentStages
+      tags: [student]
+      summary: Get all stage entries for current session
+      responses:
+        "200":
+          description: Stage entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StageEntryRecord"
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/stages/{stage}:
+    delete:
+      operationId: resetStudentStage
+      tags: [student]
+      summary: Reset (clear) a stage entry so the student can start it over
+      parameters:
+        - name: stage
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [MAP, TORCH, COMPASS, EMBED]
+      responses:
+        "204":
+          description: Stage entry cleared
+        "400":
+          description: Invalid stage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      operationId: updateStudentStage
+      tags: [student]
+      summary: Save or update a stage entry
+      parameters:
+        - name: stage
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [MAP, TORCH, RESEARCH, COMPASS, EMBED]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StageEntryInput"
+      responses:
+        "200":
+          description: Saved stage entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StageEntryRecord"
+        "400":
+          description: Invalid stage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/chat:
+    get:
+      operationId: getChatHistory
+      tags: [student]
+      summary: Get chat message history for the current session
+      responses:
+        "200":
+          description: Chat messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChatMessage"
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: sendChatMessage
+      tags: [student]
+      summary: Send a chat message via AI proxy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatMessageInput"
+      responses:
+        "200":
+          description: AI response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: AI provider not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    TeacherProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        name:
+          type: string
+        isItAdmin:
+          type: boolean
+        organisationId:
+          type: ["integer", "null"]
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - email
+        - name
+        - isItAdmin
+        - createdAt
+
+    TeacherRegistration:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        name:
+          type: string
+          minLength: 1
+        inviteCode:
+          type: string
+      required:
+        - email
+        - password
+        - name
+
+    OrgAiSettings:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        aiProvider:
+          type: ["string", "null"]
+        aiKeyMasked:
+          type: ["string", "null"]
+        azureEndpoint:
+          type: ["string", "null"]
+      required:
+        - configured
+
+    UpdateOrgAiSettingsInput:
+      type: object
+      properties:
+        aiProvider:
+          type: string
+          enum: [gemini, azure]
+        aiKey:
+          type: string
+          minLength: 1
+        azureEndpoint:
+          type: string
+      required:
+        - aiProvider
+        - aiKey
+
+    TeacherCredentials:
+      type: object
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+      required:
+        - email
+        - password
+
+    ClassRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        teacherId:
+          type: integer
+        name:
+          type: string
+        subject:
+          type: string
+          nullable: true
+        code:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - teacherId
+        - name
+        - code
+        - createdAt
+
+    ClassDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+        teacherId:
+          type: integer
+        name:
+          type: string
+        code:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        studentCount:
+          type: integer
+      required:
+        - id
+        - teacherId
+        - name
+        - code
+        - createdAt
+        - studentCount
+
+    ClassInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        subject:
+          type: string
+      required:
+        - name
+
+    StudentSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        classId:
+          type: integer
+        studentName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        latestStage:
+          type: ["string", "null"]
+        completedStages:
+          type: array
+          items:
+            type: string
+          description: List of stages (MAP/TORCH/COMPASS/EMBED) for which the student has saved content
+        stageStatuses:
+          type: object
+          additionalProperties:
+            type: string
+          description: Per-stage status - "none", "started", or "finished"
+      required:
+        - id
+        - classId
+        - studentName
+        - createdAt
+        - latestStage
+        - completedStages
+        - stageStatuses
+
+    StudentSessionInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+        classId:
+          type: integer
+        studentName:
+          type: string
+        className:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - classId
+        - studentName
+        - className
+        - createdAt
+
+    CheckStudentJoinInput:
+      type: object
+      properties:
+        studentName:
+          type: string
+          minLength: 1
+        classCode:
+          type: string
+          minLength: 1
+      required:
+        - studentName
+        - classCode
+
+    CheckJoinResult:
+      type: object
+      properties:
+        exists:
+          type: boolean
+        hasPinSet:
+          type: boolean
+      required:
+        - exists
+        - hasPinSet
+
+    StudentJoinInput:
+      type: object
+      properties:
+        studentName:
+          type: string
+          minLength: 1
+        classCode:
+          type: string
+          minLength: 1
+        pin:
+          type: string
+          minLength: 4
+          maxLength: 4
+      required:
+        - studentName
+        - classCode
+        - pin
+
+    StageEntryRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        stage:
+          type: string
+          enum: [MAP, TORCH, RESEARCH, COMPASS, EMBED]
+        contentJson:
+          type: object
+          additionalProperties: true
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - sessionId
+        - stage
+        - contentJson
+        - updatedAt
+
+    StageEntryInput:
+      type: object
+      properties:
+        contentJson:
+          type: object
+          additionalProperties: true
+      required:
+        - contentJson
+
+    ChatMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        role:
+          type: string
+        content:
+          type: string
+        bloomLevel:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - sessionId
+        - role
+        - content
+        - createdAt
+
+    ChatMessageInput:
+      type: object
+      properties:
+        message:
+          type: string
+          minLength: 1
+        bloomLevel:
+          type: string
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatHistoryItem"
+      required:
+        - message
+
+    ChatHistoryItem:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+      required:
+        - role
+        - content
+
+    ChatResponse:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+      required:
+        - role
+        - content
+
+    StudentDetail:
+      type: object
+      properties:
+        session:
+          $ref: "#/components/schemas/StudentSummary"
+        stageEntries:
+          type: array
+          items:
+            $ref: "#/components/schemas/StageEntryRecord"
+        chatMessages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+      required:
+        - session
+        - stageEntries
+        - chatMessages
+
+    TaskRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        classId:
+          type: integer
+        title:
+          type: string
+        question:
+          type: string
+        notes:
+          type: ["string", "null"]
+        bloomLevels:
+          type: array
+          items:
+            type: string
+        dueDate:
+          type: ["string", "null"]
+        successCriteria:
+          type: array
+          items:
+            type: string
+        keyVocabulary:
+          type: array
+          items:
+            type: string
+        enabledStages:
+          type: array
+          items:
+            type: string
+        stageInstructions:
+          type: object
+          properties:
+            map:
+              type: string
+            torch:
+              type: string
+            compass:
+              type: string
+            embed:
+              type: string
+        expectedLength:
+          type: ["string", "null"]
+        resources:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - classId
+        - title
+        - question
+        - bloomLevels
+
+    TaskInput:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+        question:
+          type: string
+          minLength: 1
+        notes:
+          type: string
+        bloomLevels:
+          type: array
+          items:
+            type: string
+        dueDate:
+          type: string
+        successCriteria:
+          type: array
+          items:
+            type: string
+        keyVocabulary:
+          type: array
+          items:
+            type: string
+        enabledStages:
+          type: array
+          items:
+            type: string
+        stageInstructions:
+          type: object
+          properties:
+            map:
+              type: string
+            torch:
+              type: string
+            compass:
+              type: string
+            embed:
+              type: string
+        expectedLength:
+          type: string
+        resources:
+          type: array
+          items:
+            type: string
+      required:
+        - title
+        - question

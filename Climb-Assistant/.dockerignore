@@ -1,0 +1,12 @@
+node_modules
+.git
+.DS_Store
+*.zip
+*.pdf
+.local
+.config
+.agents
+Pictures
+docs
+attached_assets
+*.tsbuildinfo

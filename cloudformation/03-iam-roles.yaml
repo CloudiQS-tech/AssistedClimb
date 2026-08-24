@@ -1,0 +1,398 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Assisted CLIMB IAM Roles and Policies'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'Assisted-CLIMB'
+    Description: 'Project name for resource tagging'
+
+Resources:
+  # ECS Task Execution Role (for Fargate tasks)
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ECS-TaskExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:assisted-climb/*'
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/assisted-climb*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ECS-TaskExecutionRole'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'ECS'
+
+  # ECS Task Role (for application containers)
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ECS-TaskRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ApplicationSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:assisted-climb/database*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:assisted-climb/session*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:assisted-climb/ai-keys*'
+        - PolicyName: S3AssetAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::assisted-climb-assets-${AWS::AccountId}/*'
+                  - !Sub 'arn:aws:s3:::assisted-climb-backups-${AWS::AccountId}/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::assisted-climb-assets-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::assisted-climb-backups-${AWS::AccountId}'
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:assisted-climb-ai-*'
+        - PolicyName: CloudWatchMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'cloudwatch:namespace': 'AssistedCLIMB/Application'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ECS-TaskRole'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'ECS'
+
+  # Lambda Execution Role for AI Functions
+  LambdaAIExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-Lambda-AI-ExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: AISecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:assisted-climb/ai-keys*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:assisted-climb/org-*'
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0'
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-instant-v1'
+        - PolicyName: AuditLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/assisted-climb-ai-*'
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'cloudwatch:namespace': 'AssistedCLIMB/AI'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Lambda-AI-ExecutionRole'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'Lambda-AI'
+
+  # RDS Enhanced Monitoring Role
+  RDSEnhancedMonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-RDS-EnhancedMonitoringRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-RDS-EnhancedMonitoringRole'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'RDS'
+
+  # Application Load Balancer Service Role (if needed for advanced features)
+  ALBServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ALB-ServiceRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: elasticloadbalancing.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ALBLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetBucketAcl
+                Resource:
+                  - !Sub 'arn:aws:s3:::assisted-climb-alb-logs-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::assisted-climb-alb-logs-${AWS::AccountId}/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ALB-ServiceRole'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'ALB'
+
+  # CloudWatch Events Role for Automated Tasks
+  CloudWatchEventsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-CloudWatchEvents-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:assisted-climb-*'
+        - PolicyName: ECSTaskExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RunTask
+                Resource:
+                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/assisted-climb-*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Ref ECSTaskExecutionRole
+                  - !Ref ECSTaskRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-CloudWatchEvents-Role'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'Automation'
+
+  # CodeDeploy Service Role (for future CI/CD)
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-CodeDeploy-ServiceRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRoleForECS
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-CodeDeploy-ServiceRole'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'CICD'
+
+  # Cross-Service Access Role for Cost Optimization
+  CostOptimizationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-CostOptimization-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CostOptimizationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ce:GetUsageReport
+                  - ce:GetDimensionValues
+                  - ce:GetReservationCoverage
+                  - ce:GetReservationPurchaseRecommendation
+                  - ce:GetReservationUtilization
+                  - ce:GetCostAndUsage
+                  - support:DescribeTrustedAdvisorChecks
+                  - support:DescribeTrustedAdvisorCheckResult
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:assisted-climb-*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-CostOptimization-Role'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'Cost-Optimization'
+
+Outputs:
+  ECSTaskExecutionRoleArn:
+    Description: 'ECS Task Execution Role ARN'
+    Value: !GetAtt ECSTaskExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-ECS-TaskExecutionRole-ARN'
+
+  ECSTaskRoleArn:
+    Description: 'ECS Task Role ARN'
+    Value: !GetAtt ECSTaskRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-ECS-TaskRole-ARN'
+
+  LambdaAIExecutionRoleArn:
+    Description: 'Lambda AI Execution Role ARN'
+    Value: !GetAtt LambdaAIExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-Lambda-AI-ExecutionRole-ARN'
+
+  RDSEnhancedMonitoringRoleArn:
+    Description: 'RDS Enhanced Monitoring Role ARN'
+    Value: !GetAtt RDSEnhancedMonitoringRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-RDS-EnhancedMonitoringRole-ARN'
+
+  CloudWatchEventsRoleArn:
+    Description: 'CloudWatch Events Role ARN'
+    Value: !GetAtt CloudWatchEventsRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-CloudWatchEvents-Role-ARN'
+
+  CodeDeployServiceRoleArn:
+    Description: 'CodeDeploy Service Role ARN'
+    Value: !GetAtt CodeDeployServiceRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-CodeDeploy-ServiceRole-ARN'
+
+  CostOptimizationRoleArn:
+    Description: 'Cost Optimization Role ARN'
+    Value: !GetAtt CostOptimizationRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-CostOptimization-Role-ARN'

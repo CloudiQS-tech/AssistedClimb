@@ -1,0 +1,339 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Assisted CLIMB RDS PostgreSQL Database'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'Assisted-CLIMB'
+    Description: 'Project name for resource tagging'
+
+  Environment:
+    Type: String
+    Default: 'Production'
+    AllowedValues: ['Development', 'Staging', 'Production']
+    Description: 'Environment name'
+
+  DBInstanceClass:
+    Type: String
+    Default: 'db.t3.small'
+    AllowedValues: ['db.t3.micro', 'db.t3.small', 'db.t3.medium']
+    Description: 'RDS instance class'
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: 'Database allocated storage in GB'
+
+  MultiAZ:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: 'Enable Multi-AZ deployment for high availability'
+
+  BackupRetentionPeriod:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 35
+    Description: 'Backup retention period in days'
+
+  DBMasterUsername:
+    Type: String
+    Default: 'postgres'
+    Description: 'Database master username'
+
+  EnablePerformanceInsights:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: 'Enable Performance Insights'
+
+Resources:
+  # Database Master Password Secret
+  DBMasterPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'assisted-climb/database/master-password'
+      Description: 'Master password for Assisted CLIMB RDS PostgreSQL'
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${DBMasterUsername}"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-DB-MasterPassword'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'Database'
+
+  # Database Connection Secret (for application)
+  DBConnectionSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'assisted-climb/database/connection'
+      Description: 'Database connection details for Assisted CLIMB application'
+      SecretString: !Sub |
+        {
+          "host": "${DatabaseInstance.Endpoint.Address}",
+          "port": "${DatabaseInstance.Endpoint.Port}",
+          "database": "assisted_climb",
+          "username": "${DBMasterUsername}",
+          "password": "${DBMasterPasswordSecret}",
+          "ssl": true,
+          "pool_size": 10,
+          "connection_timeout": 30000
+        }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-DB-Connection'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'Database'
+    DependsOn: DatabaseInstance
+
+  # RDS Parameter Group for PostgreSQL Optimization
+  DatabaseParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      DBParameterGroupName: !Sub '${ProjectName}-postgres-params'
+      Family: 'postgres15'
+      Description: 'Custom parameter group for Assisted CLIMB PostgreSQL'
+      Parameters:
+        # Connection and memory settings
+        max_connections: '200'
+        shared_preload_libraries: 'pg_stat_statements'
+        
+        # Performance settings
+        effective_cache_size: '256MB'  # Adjust based on instance size
+        maintenance_work_mem: '64MB'
+        checkpoint_completion_target: '0.9'
+        wal_buffers: '16MB'
+        
+        # Logging and monitoring
+        log_statement: 'ddl'  # Log DDL statements only
+        log_min_duration_statement: '1000'  # Log queries > 1 second
+        log_checkpoints: '1'
+        log_connections: '1'
+        log_disconnections: '1'
+        
+        # Row Level Security (for multi-tenant isolation)
+        row_security: '1'
+        
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-DB-ParameterGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # RDS Subnet Group (imported from VPC stack)
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${ProjectName}-database-subnet-group'
+      DBSubnetGroupDescription: 'Database subnets for Assisted CLIMB'
+      SubnetIds:
+        - Fn::ImportValue: !Sub '${ProjectName}-DatabaseSubnet-AZ1'
+        - Fn::ImportValue: !Sub '${ProjectName}-DatabaseSubnet-AZ2'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-DatabaseSubnetGroup'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # RDS PostgreSQL Instance
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${ProjectName}-database'
+      DBName: 'assisted_climb'
+      Engine: 'postgres'
+      EngineVersion: '15.4'
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: 'gp3'
+      StorageEncrypted: true
+      
+      # Master credentials
+      MasterUsername: !Ref DBMasterUsername
+      ManageMasterUserPassword: true
+      MasterUserSecret:
+        SecretArn: !Ref DBMasterPasswordSecret
+      
+      # Network and security
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub '${ProjectName}-RDS-SecurityGroup'
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      
+      # High availability and backup
+      MultiAZ: !Ref MultiAZ
+      BackupRetentionPeriod: !Ref BackupRetentionPeriod
+      PreferredBackupWindow: '03:00-04:00'  # Low traffic window
+      PreferredMaintenanceWindow: 'Sun:04:00-Sun:05:00'
+      DeletionProtection: true
+      
+      # Parameter and option groups
+      DBParameterGroupName: !Ref DatabaseParameterGroup
+      
+      # Monitoring and performance
+      MonitoringInterval: 60
+      MonitoringRoleArn:
+        Fn::ImportValue: !Sub '${ProjectName}-RDS-EnhancedMonitoringRole-ARN'
+      EnablePerformanceInsights: !Ref EnablePerformanceInsights
+      PerformanceInsightsRetentionPeriod: 7  # Free tier: 7 days
+      
+      # Maintenance and upgrades
+      AutoMinorVersionUpgrade: true
+      AllowMajorVersionUpgrade: false
+      
+      # Cost optimization
+      PubliclyAccessible: false
+      
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Database'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Component
+          Value: 'Database'
+        - Key: Backup
+          Value: 'Automated'
+
+  # CloudWatch Alarms for Database Monitoring
+  DBCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-Database-CPU-High'
+      AlarmDescription: 'Database CPU utilization is too high'
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabaseInstance
+      AlarmActions:
+        - Fn::ImportValue: 'AssistedClimb-BillingAlertTopicArn'
+
+  DBConnectionAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-Database-Connections-High'
+      AlarmDescription: 'Database connection count is too high'
+      MetricName: DatabaseConnections
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 160  # 80% of max_connections (200)
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabaseInstance
+      AlarmActions:
+        - Fn::ImportValue: 'AssistedClimb-BillingAlertTopicArn'
+
+  DBFreeStorageSpaceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-Database-FreeStorage-Low'
+      AlarmDescription: 'Database free storage space is running low'
+      MetricName: FreeStorageSpace
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2147483648  # 2GB in bytes
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabaseInstance
+      AlarmActions:
+        - Fn::ImportValue: 'AssistedClimb-BillingAlertTopicArn'
+
+  # Database Read Replica (for future scaling)
+  DatabaseReadReplica:
+    Type: AWS::RDS::DBInstance
+    Condition: CreateReadReplica
+    Properties:
+      DBInstanceIdentifier: !Sub '${ProjectName}-database-replica'
+      SourceDBInstanceIdentifier: !Ref DatabaseInstance
+      DBInstanceClass: !Ref DBInstanceClass
+      PubliclyAccessible: false
+      MultiAZ: false  # Read replicas don't need Multi-AZ
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub '${ProjectName}-RDS-SecurityGroup'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Database-Replica'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Component
+          Value: 'Database-Replica'
+
+Conditions:
+  CreateReadReplica: !Equals [!Ref Environment, 'Production']
+  IsProduction: !Equals [!Ref Environment, 'Production']
+
+Outputs:
+  DatabaseEndpoint:
+    Description: 'RDS PostgreSQL endpoint'
+    Value: !GetAtt DatabaseInstance.Endpoint.Address
+    Export:
+      Name: !Sub '${ProjectName}-Database-Endpoint'
+
+  DatabasePort:
+    Description: 'RDS PostgreSQL port'
+    Value: !GetAtt DatabaseInstance.Endpoint.Port
+    Export:
+      Name: !Sub '${ProjectName}-Database-Port'
+
+  DatabaseName:
+    Description: 'Database name'
+    Value: 'assisted_climb'
+    Export:
+      Name: !Sub '${ProjectName}-Database-Name'
+
+  DatabaseConnectionSecretArn:
+    Description: 'Database connection secret ARN'
+    Value: !Ref DBConnectionSecret
+    Export:
+      Name: !Sub '${ProjectName}-Database-ConnectionSecret-ARN'
+
+  DatabaseMasterPasswordSecretArn:
+    Description: 'Database master password secret ARN'
+    Value: !Ref DBMasterPasswordSecret
+    Export:
+      Name: !Sub '${ProjectName}-Database-MasterPasswordSecret-ARN'
+
+  DatabaseInstanceId:
+    Description: 'RDS Database Instance ID'
+    Value: !Ref DatabaseInstance
+    Export:
+      Name: !Sub '${ProjectName}-Database-InstanceId'
+
+  DatabaseParameterGroupName:
+    Description: 'Database Parameter Group Name'
+    Value: !Ref DatabaseParameterGroup
+    Export:
+      Name: !Sub '${ProjectName}-Database-ParameterGroup'
+
+  DatabaseReadReplicaEndpoint:
+    Condition: CreateReadReplica
+    Description: 'RDS PostgreSQL Read Replica endpoint'
+    Value: !GetAtt DatabaseReadReplica.Endpoint.Address
+    Export:
+      Name: !Sub '${ProjectName}-Database-ReadReplica-Endpoint'

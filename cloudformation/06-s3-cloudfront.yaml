@@ -1,0 +1,512 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Assisted CLIMB S3 Storage and CloudFront CDN'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'Assisted-CLIMB'
+    Description: 'Project name for resource tagging'
+
+  Environment:
+    Type: String
+    Default: 'Production'
+    AllowedValues: ['Development', 'Staging', 'Production']
+    Description: 'Environment name'
+
+  DomainName:
+    Type: String
+    Default: 'assistedclimb.com'
+    Description: 'Domain name for the application'
+
+  CreateCertificate:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: 'Create SSL certificate for custom domain'
+
+Resources:
+  # S3 Bucket for Static Assets
+  StaticAssetsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'assisted-climb-assets-${AWS::AccountId}'
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: IntelligentTiering
+            Status: Enabled
+            Transitions:
+              - StorageClass: INTELLIGENT_TIERING
+                TransitionInDays: 0
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: 'assets-access-logs/'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Static-Assets'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket for Database Backups
+  BackupsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'assisted-climb-backups-${AWS::AccountId}'
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: BackupRetention
+            Status: Enabled
+            ExpirationInDays: 90  # Keep backups for 90 days
+            NoncurrentVersionExpirationInDays: 30
+          - Id: ArchiveOldBackups
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Backups'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket for Access Logs
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'assisted-climb-logs-${AWS::AccountId}'
+      AccessControl: LogDeliveryWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 30  # Keep access logs for 30 days
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Access-Logs'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # CloudFront Origin Access Control for S3
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${ProjectName}-S3-OAC'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+        Description: 'Origin Access Control for Assisted CLIMB S3 bucket'
+
+  # SSL Certificate (if enabled)
+  SSLCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: ShouldCreateCertificate
+    Properties:
+      DomainName: !Ref DomainName
+      SubjectAlternativeNames:
+        - !Sub 'app.${DomainName}'
+        - !Sub 'api.${DomainName}'
+        - !Sub 'www.${DomainName}'
+        - !Sub '*.${DomainName}'
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref Route53HostedZone
+        - DomainName: !Sub 'app.${DomainName}'
+          HostedZoneId: !Ref Route53HostedZone
+        - DomainName: !Sub 'api.${DomainName}'
+          HostedZoneId: !Ref Route53HostedZone
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-SSL-Certificate'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Route 53 Hosted Zone
+  Route53HostedZone:
+    Type: AWS::Route53::HostedZone
+    Condition: ShouldCreateCertificate
+    Properties:
+      Name: !Ref DomainName
+      HostedZoneConfig:
+        Comment: !Sub 'Hosted zone for ${ProjectName}'
+      HostedZoneTags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-HostedZone'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # CloudFront Distribution
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub '${ProjectName} - Static Assets and Application CDN'
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100  # US, Canada, Europe - cost optimization
+        
+        # Origins
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StaticAssetsBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''  # Use OAC instead
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+          - Id: ALBOrigin
+            DomainName:
+              Fn::ImportValue: !Sub '${ProjectName}-ALB-DNSName'
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only  # ALB handles SSL termination
+              OriginSSLProtocols:
+                - TLSv1.2
+        
+        # Default behavior for static assets
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf  # Managed-CORS-S3Origin
+        
+        # Behavior for API calls (dynamic content)
+        CacheBehaviors:
+          - PathPattern: '/api/*'
+            TargetOriginId: ALBOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - DELETE
+              - GET
+              - HEAD
+              - OPTIONS
+              - PATCH
+              - POST
+              - PUT
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad  # Managed-CachingDisabled
+            OriginRequestPolicyId: 775133bc-15f2-49f9-abea-afb2e0bf67d2  # Managed-AllViewerExceptHostHeader
+          
+          - PathPattern: '/health'
+            TargetOriginId: ALBOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: false
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad  # Managed-CachingDisabled
+          
+          - PathPattern: '/auth/*'
+            TargetOriginId: ALBOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - DELETE
+              - GET
+              - HEAD
+              - OPTIONS
+              - PATCH
+              - POST
+              - PUT
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad  # Managed-CachingDisabled
+            OriginRequestPolicyId: 775133bc-15f2-49f9-abea-afb2e0bf67d2  # Managed-AllViewerExceptHostHeader
+        
+        # SSL and domain configuration
+        Aliases: !If
+          - ShouldCreateCertificate
+          - - !Ref DomainName
+            - !Sub 'www.${DomainName}'
+            - !Sub 'app.${DomainName}'
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - ShouldCreateCertificate
+          - AcmCertificateArn: !Ref SSLCertificate
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        
+        # Error pages
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'  # SPA routing
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'  # SPA routing
+          - ErrorCode: 500
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 502
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 503
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 504
+            ErrorCachingMinTTL: 10
+        
+        # Logging
+        Logging:
+          Bucket: !GetAtt AccessLogsBucket.RegionalDomainName
+          Prefix: 'cloudfront-access-logs/'
+          IncludeCookies: false
+        
+        # Security
+        WebACLId: !Ref WebACL
+        
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-CloudFront-Distribution'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # WAF Web ACL for CloudFront
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub '${ProjectName}-WebACL'
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      Rules:
+        - Name: RateLimitRule
+          Priority: 1
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 2000  # requests per 5 minutes per IP
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitRule
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 2
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRuleSet
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 3
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: KnownBadInputsRuleSet
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub '${ProjectName}WebACL'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-WebACL'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # S3 Bucket Policy for CloudFront OAC
+  StaticAssetsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticAssetsBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${StaticAssetsBucket}/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+          - Effect: Allow
+            Principal:
+              AWS:
+                - Fn::ImportValue: !Sub '${ProjectName}-ECS-TaskRole-ARN'
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource: !Sub '${StaticAssetsBucket}/*'
+          - Effect: Allow
+            Principal:
+              AWS:
+                - Fn::ImportValue: !Sub '${ProjectName}-ECS-TaskRole-ARN'
+            Action: s3:ListBucket
+            Resource: !Ref StaticAssetsBucket
+
+  # Route 53 DNS Records (if certificate is enabled)
+  ApexDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: ShouldCreateCertificate
+    Properties:
+      HostedZoneId: !Ref Route53HostedZone
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront hosted zone ID
+
+  WWWDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: ShouldCreateCertificate
+    Properties:
+      HostedZoneId: !Ref Route53HostedZone
+      Name: !Sub 'www.${DomainName}'
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront hosted zone ID
+
+  AppDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: ShouldCreateCertificate
+    Properties:
+      HostedZoneId: !Ref Route53HostedZone
+      Name: !Sub 'app.${DomainName}'
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront hosted zone ID
+
+  APIDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: ShouldCreateCertificate
+    Properties:
+      HostedZoneId: !Ref Route53HostedZone
+      Name: !Sub 'api.${DomainName}'
+      Type: A
+      AliasTarget:
+        DNSName:
+          Fn::ImportValue: !Sub '${ProjectName}-ALB-DNSName'
+        HostedZoneId:
+          Fn::ImportValue: !Sub '${ProjectName}-ALB-HostedZoneId'
+
+Conditions:
+  ShouldCreateCertificate: !Equals [!Ref CreateCertificate, 'true']
+
+Outputs:
+  StaticAssetsBucketName:
+    Description: 'S3 bucket for static assets'
+    Value: !Ref StaticAssetsBucket
+    Export:
+      Name: !Sub '${ProjectName}-StaticAssets-Bucket'
+
+  BackupsBucketName:
+    Description: 'S3 bucket for backups'
+    Value: !Ref BackupsBucket
+    Export:
+      Name: !Sub '${ProjectName}-Backups-Bucket'
+
+  CloudFrontDistributionId:
+    Description: 'CloudFront Distribution ID'
+    Value: !Ref CloudFrontDistribution
+    Export:
+      Name: !Sub '${ProjectName}-CloudFront-DistributionId'
+
+  CloudFrontDomainName:
+    Description: 'CloudFront Distribution Domain Name'
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub '${ProjectName}-CloudFront-DomainName'
+
+  WebACLId:
+    Description: 'WAF Web ACL ID'
+    Value: !GetAtt WebACL.Id
+    Export:
+      Name: !Sub '${ProjectName}-WebACL-Id'
+
+  SSLCertificateArn:
+    Condition: ShouldCreateCertificate
+    Description: 'SSL Certificate ARN'
+    Value: !Ref SSLCertificate
+    Export:
+      Name: !Sub '${ProjectName}-SSL-Certificate-ARN'
+
+  HostedZoneId:
+    Condition: ShouldCreateCertificate
+    Description: 'Route 53 Hosted Zone ID'
+    Value: !Ref Route53HostedZone
+    Export:
+      Name: !Sub '${ProjectName}-HostedZone-Id'
+
+  AppURL:
+    Description: 'Application URL'
+    Value: !If
+      - ShouldCreateCertificate
+      - !Sub 'https://${DomainName}'
+      - !Sub 'https://${CloudFrontDistribution.DomainName}'
+    Export:
+      Name: !Sub '${ProjectName}-App-URL'

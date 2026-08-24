@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Assisted CLIMB Billing Alerts and Cost Monitoring Infrastructure'
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Default: 'admin@assistedclimb.education'
+    Description: 'Email address for billing alerts'
+  
+  MonthlyBudgetLimit:
+    Type: Number
+    Default: 100
+    Description: 'Monthly budget limit in USD'
+  
+  ProjectName:
+    Type: String
+    Default: 'Assisted-CLIMB'
+    Description: 'Project name for resource tagging'
+
+Resources:
+  # SNS Topic for Billing Alerts
+  BillingAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: 'assisted-climb-billing-alerts'
+      DisplayName: 'Assisted CLIMB Billing Alerts'
+      KmsMasterKeyId: 'alias/aws/sns'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'Billing-Alerts'
+
+  # Email Subscription for Billing Alerts
+  BillingAlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref BillingAlertTopic
+      Endpoint: !Ref AlertEmail
+
+  # CloudWatch Alarm for $50 threshold (50% of budget)
+  BillingAlarm50USD:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: 'assisted-climb-billing-50usd'
+      AlarmDescription: 'Billing alarm when estimated charges exceed $50 (50% of budget)'
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 21600  # 6 hours
+      EvaluationPeriods: 1
+      Threshold: 50
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref BillingAlertTopic
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: 'Cost-Monitoring'
+
+  # CloudWatch Alarm for $100 threshold (100% of budget)
+  BillingAlarm100USD:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: 'assisted-climb-billing-100usd'
+      AlarmDescription: 'Billing alarm when estimated charges exceed $100 (budget limit)'
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 21600  # 6 hours
+      EvaluationPeriods: 1
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref BillingAlertTopic
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # CloudWatch Alarm for $80 threshold (80% of budget)
+  BillingAlarm80USD:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: 'assisted-climb-billing-80usd'
+      AlarmDescription: 'Billing alarm when estimated charges exceed $80 (80% of budget)'
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 21600  # 6 hours
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref BillingAlertTopic
+      TreatMissingData: notBreaching
+
+  # CloudWatch Alarm for $120 threshold (120% of budget)
+  BillingAlarm120USD:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: 'assisted-climb-billing-120usd'
+      AlarmDescription: 'Critical billing alarm when estimated charges exceed $120 (120% of budget)'
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 21600  # 6 hours
+      EvaluationPeriods: 1
+      Threshold: 120
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref BillingAlertTopic
+      TreatMissingData: notBreaching
+
+  # Monthly Cost Budget
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: 'assisted-climb-monthly-budget'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+        CostFilters:
+          TagKey:
+            - Project
+          TagValue:
+            - !Ref ProjectName
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref BillingAlertTopic
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref BillingAlertTopic
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref BillingAlertTopic
+
+  # Forecasted Budget for Proactive Monitoring
+  ForecastedBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: 'assisted-climb-forecasted-budget'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+        CostFilters:
+          TagKey:
+            - Project
+          TagValue:
+            - !Ref ProjectName
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref BillingAlertTopic
+
+  # Usage Budget for Compute Hours
+  UsageBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: 'assisted-climb-usage-budget'
+        BudgetType: USAGE
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 1000  # 1000 hours
+          Unit: Hours
+        CostFilters:
+          Service:
+            - Amazon Elastic Container Service
+            - Amazon Relational Database Service
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref BillingAlertTopic
+
+Outputs:
+  BillingAlertTopicArn:
+    Description: 'ARN of the SNS topic for billing alerts'
+    Value: !Ref BillingAlertTopic
+    Export:
+      Name: 'AssistedClimb-BillingAlertTopicArn'
+
+  AlertEmail:
+    Description: 'Email address receiving billing alerts'
+    Value: !Ref AlertEmail
+
+  MonthlyBudgetLimit:
+    Description: 'Monthly budget limit'
+    Value: !Sub '$${MonthlyBudgetLimit}'
+
+  BillingAlarmsCount:
+    Description: 'Number of billing alarms configured'
+    Value: '4'
+
+  BudgetsCount:
+    Description: 'Number of budgets configured'
+    Value: '3'
