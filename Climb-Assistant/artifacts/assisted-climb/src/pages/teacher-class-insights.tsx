@@ -1,13 +1,22 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link, useRoute } from "wouter";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiFetchBlob, downloadBlob } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
-import { classifyMessages, classifyQuestion, QUESTION_TYPE_META, QUESTION_TYPES } from "@/lib/question-classifier";
+import {
+  classifyKnowledgeDimension,
+  classifyMessages,
+  classifyQuestion,
+  KNOWLEDGE_DIMENSION_META,
+  KNOWLEDGE_DIMENSION_TYPES,
+  QUESTION_TYPE_META,
+  QUESTION_TYPES,
+} from "@/lib/question-classifier";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import InsightReportContent from "@/components/insight-report-content";
 
 const STAGES = ["MAP", "TORCH", "COMPASS", "RESEARCH", "EMBED"] as const;
 const STAGE_DISPLAY: Record<string, string> = {
-  MAP: "MAP", TORCH: "TORCH", RESEARCH: "RESEARCH", COMPASS: "COMPASS", EMBED: "Final Response",
+  MAP: "MAP", TORCH: "TORCH", RESEARCH: "RESEARCH", COMPASS: "COMPASS", EMBED: "Final Answer",
 };
 const STAGE_LIGHT: Record<string, string> = {
   MAP: "text-neutral-700 bg-neutral-100 border-neutral-200",
@@ -27,6 +36,33 @@ const QT: Record<string, { bg: string; text: string; light: string }> = {
   "Help/Clarify": { bg: "bg-pink-500", text: "text-pink-600", light: "bg-pink-50" },
   Other:                { bg: "bg-slate-400",   text: "text-slate-500",   light: "bg-slate-50" },
 };
+const KD: Record<string, { bg: string; text: string; light: string }> = {
+  "Factual Knowledge":   { bg: "bg-blue-500",    text: "text-blue-600",    light: "bg-blue-50" },
+  "Conceptual Knowledge":{ bg: "bg-emerald-500", text: "text-emerald-600", light: "bg-emerald-50" },
+  "Procedural Knowledge":{ bg: "bg-amber-500",   text: "text-amber-600",   light: "bg-amber-50" },
+  "Learning Process":    { bg: "bg-violet-500",  text: "text-violet-600",  light: "bg-violet-50" },
+  Other:                 { bg: "bg-slate-400",   text: "text-slate-500",   light: "bg-slate-50" },
+};
+
+type InsightHistoryEntry = Record<string, any> & { generatedAt: string };
+
+function csvCell(value: unknown) {
+  const rawValue = String(value ?? "");
+  const safeValue = `'${rawValue}`;
+  return `"${safeValue.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(rows: Array<unknown[]>, filename: string) {
+  const csv = rows
+    .map((row) => row.map((value) => csvCell(Array.isArray(value) ? value.join("; ") : value)).join(","))
+    .join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function TeacherClassInsights() {
   const [, params] = useRoute("/teacher/class/:classId/insights");
@@ -38,17 +74,25 @@ export default function TeacherClassInsights() {
   const [synthesising, setSynthesising] = useState(false);
   const [insights, setInsights] = useState<any>(null);
   const [insightsGeneratedAt, setInsightsGeneratedAt] = useState<string | null>(null);
+  const [insightHistory, setInsightHistory] = useState<InsightHistoryEntry[]>([]);
+  const [expandedQuestionTypes, setExpandedQuestionTypes] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState(false);
+  const [reportOpen, setReportOpen] = useState(true);
 
   useEffect(() => {
     if (!classId) return;
     apiFetch(`/teacher/classes/${classId}/class-insights`)
       .then((d: any) => {
         setData(d);
-        if (d.lastInsights) {
-          setInsights(d.lastInsights);
-          setInsightsGeneratedAt(d.lastInsightsAt ?? null);
-        }
+        const history = Array.isArray(d.insightsHistory)
+          ? d.insightsHistory.filter((entry: any) => entry && typeof entry === "object" && typeof entry.generatedAt === "string")
+          : d.lastInsights
+            ? [{ ...d.lastInsights, generatedAt: d.lastInsightsAt ?? new Date(0).toISOString() }]
+            : [];
+        const latest = history[history.length - 1] ?? null;
+        setInsightHistory(history);
+        setInsights(latest);
+        setInsightsGeneratedAt(latest?.generatedAt ?? null);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -64,10 +108,50 @@ export default function TeacherClassInsights() {
     );
   }, [data?.torchMessages]);
 
+  const isKnowledgeDimensionsTask = data?.task?.learningFramework === "knowledge_dimensions";
+  const knowledgeDimensionCounts = useMemo<Record<string, number>>(() => {
+    const counts: Record<string, number> = Object.fromEntries(
+      KNOWLEDGE_DIMENSION_TYPES.map((type) => [type, 0]),
+    );
+    for (const message of (data?.torchMessages ?? []) as any[]) {
+      if (message.role === "user" && typeof message.content === "string") {
+        const type = classifyKnowledgeDimension(message.content);
+        counts[type] = (counts[type] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [data?.torchMessages]);
+
+  const knowledgeDimensionExamplesByType = useMemo<Record<string, string[]>>(() => {
+    const grouped: Record<string, string[]> = {};
+    for (const message of (data?.torchMessages ?? []) as any[]) {
+      if (message.role !== "user" || typeof message.content !== "string") continue;
+      const type = classifyKnowledgeDimension(message.content);
+      grouped[type] = [...(grouped[type] ?? []), message.content];
+    }
+    return grouped;
+  }, [data?.torchMessages]);
+
   const totalMessages = useMemo(
     () => Object.values(questionTypeCounts).reduce((a: number, b: number) => a + b, 0),
     [questionTypeCounts]
   );
+
+  const questionExamplesByType = useMemo<Record<string, string[]>>(() => {
+    const grouped: Record<string, string[]> = {};
+    for (const message of (data?.torchMessages ?? []) as any[]) {
+      if (message.role !== "user" || typeof message.content !== "string") continue;
+      const type = classifyQuestion(message.content);
+      grouped[type] = [...(grouped[type] ?? []), message.content];
+    }
+    return grouped;
+  }, [data?.torchMessages]);
+
+  const analysisTypes = isKnowledgeDimensionsTask ? KNOWLEDGE_DIMENSION_TYPES : QUESTION_TYPES;
+  const analysisCounts = isKnowledgeDimensionsTask ? knowledgeDimensionCounts : questionTypeCounts;
+  const analysisExamplesByType = isKnowledgeDimensionsTask ? knowledgeDimensionExamplesByType : questionExamplesByType;
+  const analysisMeta = isKnowledgeDimensionsTask ? KNOWLEDGE_DIMENSION_META : QUESTION_TYPE_META;
+  const analysisStyles = isKnowledgeDimensionsTask ? KD : QT;
 
   const stageCompletion = useMemo<Record<string, {
     finished: number; started: number; none: number;
@@ -96,18 +180,24 @@ export default function TeacherClassInsights() {
     return out;
   }, [data?.students]);
 
+  const sortedQTypes = (analysisTypes as readonly string[])
+    .filter((t) => (analysisCounts[t] ?? 0) > 0)
+    .sort((a, b) => (analysisCounts[b] ?? 0) - (analysisCounts[a] ?? 0));
+
+  const dominantType = sortedQTypes[0] ?? null;
+  const leastType = sortedQTypes[sortedQTypes.length - 1] ?? null;
+
+  useEffect(() => {
+    if (dominantType && Object.keys(expandedQuestionTypes).length === 0) {
+      setExpandedQuestionTypes({ [dominantType]: true });
+    }
+  }, [dominantType, expandedQuestionTypes]);
+
   if (loading) return null;
   if (!data) return <div className="p-6 text-neutral-500">Class not found</div>;
 
   const { task, students, cls } = data;
   const studentCount: number = (students ?? []).length;
-
-  const sortedQTypes = (QUESTION_TYPES as string[])
-    .filter((t) => (questionTypeCounts[t] ?? 0) > 0)
-    .sort((a, b) => (questionTypeCounts[b] ?? 0) - (questionTypeCounts[a] ?? 0));
-
-  const dominantType = sortedQTypes[0] ?? null;
-  const leastType = sortedQTypes[sortedQTypes.length - 1] ?? null;
 
   // Mutually exclusive student categories (fully done + in progress + not started = total)
   const fullyDoneStudents = (students as any[] ?? []).filter((s: any) =>
@@ -120,16 +210,19 @@ export default function TeacherClassInsights() {
     (s.stageStatuses?.["EMBED"] ?? "none") !== "finished" &&
     STAGES.some((stage) => (s.stageStatuses?.[stage] ?? "none") !== "none")
   );
+  const completePercentage = studentCount > 0
+    ? Math.round((fullyDoneStudents.length / studentCount) * 100)
+    : 0;
+  const incompletePercentage = studentCount > 0 ? 100 - completePercentage : 0;
 
   // Intervention panels
   const interventionStages = STAGES.filter((s) => (stageCompletion[s]?.none ?? 0) > 0);
   // "Needs a nudge" panel: only show students who haven't started anything at all
   const stuckStudents = inProgressStudents;
 
-  const handleCopy = async () => {
-    if (!insights) return;
-    const date = insightsGeneratedAt
-      ? new Date(insightsGeneratedAt).toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })
+  const buildInsightText = (report: any, generatedAt: string | null) => {
+    const date = generatedAt
+      ? new Date(generatedAt).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })
       : new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
     const lines: string[] = [
       "TEACHING INTELLIGENCE",
@@ -137,60 +230,136 @@ export default function TeacherClassInsights() {
       `Generated: ${date}`,
       "",
     ];
-    if (insights.questionTypeInsight) {
-      lines.push("QUESTION TYPE INTELLIGENCE");
-      lines.push("─".repeat(40));
-      lines.push(insights.questionTypeInsight);
-      lines.push("");
+    if (report?.questionTypeInsight) {
+      lines.push("QUESTION TYPE INTELLIGENCE", "─".repeat(40), report.questionTypeInsight, "");
     }
-    if ((insights.confidentAreas?.length ?? 0) > 0) {
-      lines.push("WHAT STUDENTS SEEM CONFIDENT ABOUT");
-      lines.push("─".repeat(40));
-      (insights.confidentAreas as string[]).forEach((item: string, i: number) => lines.push(`${i + 1}. ${item}`));
+    const addList = (heading: string, items: unknown, numbered = true) => {
+      if (!Array.isArray(items) || items.length === 0) return;
+      lines.push(heading, "─".repeat(40));
+      items.forEach((item, index) => lines.push(numbered ? `${index + 1}. ${item}` : `• ${item}`));
       lines.push("");
+    };
+    addList("WHAT STUDENTS SEEM CONFIDENT ABOUT", report?.confidentAreas);
+    addList("WHERE GAPS APPEAR", report?.knowledgeGaps);
+    addList("STUDENT MISCONCEPTIONS (VERBATIM)", report?.misconceptionQuotes, false);
+    addList("STAGE COMPLETION PATTERNS", report?.stagePatterns, false);
+    addList("TEACHING RECOMMENDATIONS", report?.teachingRecommendations);
+    addList("NEXT LESSON PLAN", report?.nextLessonPlan);
+    return lines.join("\n");
+  };
+
+  const appendInsightCsvRows = (rows: Array<unknown[]>, report: any) => {
+    if (report?.questionTypeInsight) {
+      rows.push(["Teaching Insights", "What the questions tell you", report.questionTypeInsight]);
     }
-    if ((insights.knowledgeGaps?.length ?? 0) > 0) {
-      lines.push("WHERE GAPS APPEAR");
-      lines.push("─".repeat(40));
-      (insights.knowledgeGaps as string[]).forEach((item: string, i: number) => lines.push(`${i + 1}. ${item}`));
-      lines.push("");
-    }
-    if ((insights.misconceptionQuotes?.length ?? 0) > 0) {
-      lines.push("STUDENT MISCONCEPTIONS (VERBATIM)");
-      lines.push("─".repeat(40));
-      (insights.misconceptionQuotes as string[]).forEach((item: string) => lines.push(`• ${item}`));
-      lines.push("");
-    }
-    if ((insights.stagePatterns?.length ?? 0) > 0) {
-      lines.push("STAGE COMPLETION PATTERNS");
-      lines.push("─".repeat(40));
-      (insights.stagePatterns as string[]).forEach((item: string) => lines.push(`• ${item}`));
-      lines.push("");
-    }
-    if ((insights.teachingRecommendations?.length ?? 0) > 0) {
-      lines.push("TEACHING RECOMMENDATIONS");
-      lines.push("─".repeat(40));
-      (insights.teachingRecommendations as string[]).forEach((item: string, i: number) => lines.push(`${i + 1}. ${item}`));
-      lines.push("");
-    }
-    if ((insights.nextLessonPlan?.length ?? 0) > 0) {
-      lines.push("NEXT LESSON PLAN");
-      lines.push("─".repeat(40));
-      (insights.nextLessonPlan as string[]).forEach((item: string, i: number) => lines.push(`${i + 1}. ${item}`));
-      lines.push("");
-    }
-    await navigator.clipboard.writeText(lines.join("\n"));
+    const addInsightItems = (section: string, items: unknown) => {
+      if (!Array.isArray(items)) return;
+      items.forEach((item, index) => rows.push([section, index + 1, item]));
+    };
+    addInsightItems("Teaching Insights — confident areas", report?.confidentAreas);
+    addInsightItems("Teaching Insights — knowledge gaps", report?.knowledgeGaps);
+    addInsightItems("Teaching Insights — misconceptions", report?.misconceptionQuotes);
+    addInsightItems("Teaching Insights — stage patterns", report?.stagePatterns);
+    addInsightItems("Teaching Insights — recommendations", report?.teachingRecommendations);
+    addInsightItems("Teaching Insights — next lesson plan", report?.nextLessonPlan);
+  };
+
+  const reportFilenameDate = (report: InsightHistoryEntry, index: number) => {
+    const date = report.generatedAt?.slice(0, 10).replace(/[^0-9-]/g, "");
+    return date || `report-${index + 1}`;
+  };
+
+  const handleCopy = async () => {
+    if (!insights) return;
+    await navigator.clipboard.writeText(buildInsightText(insights, insightsGeneratedAt));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handlePrintReport = () => {
-    const style = document.createElement("style");
-    style.id = "__report-print-style";
-    style.innerHTML = `@media print { body > * { display: none !important; } #teaching-intelligence-report { display: block !important; position: static !important; } }`;
-    document.head.appendChild(style);
-    window.print();
-    document.head.removeChild(style);
+  const handleDownloadPdf = async () => {
+    const source = document.getElementById("teaching-intelligence-report");
+    if (!source) return;
+    const clone = source.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll("button, form, [data-export-controls]").forEach((element) => element.remove());
+    clone.querySelectorAll(".report-collapsible-content").forEach((element) => element.classList.remove("hidden"));
+    const text = (clone.innerText || clone.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+    if (!text) return;
+    try {
+      const blob = await apiFetchBlob("/teacher/export/pdf", {
+        method: "POST",
+        body: JSON.stringify({ title: "Class Teaching Intelligence", text }),
+      });
+      downloadBlob(blob, "assisted-climb-class-teaching-intelligence.pdf");
+    } catch (error: any) {
+      toast({ title: "Teaching Intelligence PDF could not be downloaded", description: error?.message ?? "Please try again.", variant: "destructive" });
+    }
+  };
+
+  const handleDownloadCsv = () => {
+    const rows: Array<unknown[]> = [
+      ["Section", "Item", "Value", "Examples"],
+      ["Report", "Class", cls?.name ?? ""],
+      ["Report", "Assignment", task?.title ?? ""],
+      ["Report", "Question", task?.question ?? ""],
+      ["Report", "Generated at", insightsGeneratedAt ? new Date(insightsGeneratedAt).toISOString() : ""],
+      ["Class summary", "Students enrolled", studentCount],
+      ["Class summary", "Climbs complete", fullyDoneStudents.length],
+      ["Class summary", "Climbs in progress", inProgressStudents.length],
+      ["Class summary", "Climbs not started", notStartedStudents.length],
+      ["Class summary", "Complete percentage", `${completePercentage}%`],
+      ["Class summary", "Incomplete percentage", `${incompletePercentage}%`],
+    ];
+
+    for (const stage of STAGES) {
+      const counts = stageCompletion[stage] ?? { finished: 0, started: 0, none: 0 };
+      rows.push(
+        ["Stage completion", `${STAGE_DISPLAY[stage]} — complete`, counts.finished],
+        ["Stage completion", `${STAGE_DISPLAY[stage]} — in progress`, counts.started],
+        ["Stage completion", `${STAGE_DISPLAY[stage]} — not started`, counts.none],
+      );
+    }
+
+    for (const type of sortedQTypes) {
+      const count = analysisCounts[type] ?? 0;
+      const percentage = totalMessages > 0 ? Math.round((count / totalMessages) * 100) : 0;
+      rows.push([
+        isKnowledgeDimensionsTask ? "Knowledge dimension signal" : "Question type",
+        type,
+        `${count} (${percentage}%)`,
+        (analysisExamplesByType[type] ?? []).join(" | "),
+      ]);
+    }
+
+    appendInsightCsvRows(rows, insights);
+
+    downloadCsv(rows, "assisted-climb-class-teaching-intelligence.csv");
+  };
+
+  const handleDownloadHistoricalPdf = async (report: InsightHistoryEntry, index: number) => {
+    try {
+      const blob = await apiFetchBlob("/teacher/export/pdf", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Previous Class Teaching Intelligence",
+          text: buildInsightText(report, report.generatedAt),
+        }),
+      });
+      downloadBlob(blob, `assisted-climb-class-teaching-intelligence-${reportFilenameDate(report, index)}.pdf`);
+    } catch (error: any) {
+      toast({ title: "Teaching Intelligence PDF could not be downloaded", description: error?.message ?? "Please try again.", variant: "destructive" });
+    }
+  };
+
+  const handleDownloadHistoricalCsv = (report: InsightHistoryEntry, index: number) => {
+    const rows: Array<unknown[]> = [
+      ["Section", "Item", "Value", "Examples"],
+      ["Report", "Class", cls?.name ?? ""],
+      ["Report", "Assignment", task?.title ?? ""],
+      ["Report", "Question", task?.question ?? ""],
+      ["Report", "Generated at", report.generatedAt ? new Date(report.generatedAt).toISOString() : ""],
+    ];
+    appendInsightCsvRows(rows, report);
+    downloadCsv(rows, `assisted-climb-class-teaching-intelligence-${reportFilenameDate(report, index)}.csv`);
   };
 
   const handleSynthesise = async () => {
@@ -204,15 +373,20 @@ export default function TeacherClassInsights() {
       const result = await apiFetch(`/teacher/classes/${classId}/class-insights/synthesize`, {
         method: "POST",
         body: JSON.stringify({
-          questionTypeCounts,
+          questionTypeCounts: analysisCounts,
           totalMessages,
           torchSamples,
           stageCompletion: stageCompletionCounts,
           studentCount,
+          learningFramework: data.task?.learningFramework ?? "bloom",
+          knowledgeDimensions: data.task?.knowledgeDimensions ?? [],
         }),
       });
-      setInsights(result);
-      setInsightsGeneratedAt(result.generatedAt ?? new Date().toISOString());
+      const generatedAt = result.generatedAt ?? new Date().toISOString();
+      const nextInsight = { ...result, generatedAt };
+      setInsightHistory((current) => [...current, nextInsight]);
+      setInsights(nextInsight);
+      setInsightsGeneratedAt(generatedAt);
     } catch (err: any) {
       toast({ title: "Failed to generate insights", description: err.message, variant: "destructive" });
     } finally {
@@ -223,45 +397,57 @@ export default function TeacherClassInsights() {
   return (
     <div className="min-h-[100dvh] bg-neutral-50 text-neutral-900 font-sans pb-20">
       <header className="sticky top-0 z-50 border-b border-neutral-200 bg-white/90 backdrop-blur">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm">
+        <div className="max-w-5xl mx-auto px-6 py-4 flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 text-sm">
             <Link href="/teacher/dashboard" className="text-neutral-500 hover:text-black">Dashboard</Link>
             <span className="text-neutral-300">/</span>
-            <Link href={`/teacher/class/${classId}`} className="text-neutral-500 hover:text-black">
+            <Link href={`/teacher/class/${classId}`} className="min-w-0 text-neutral-500 hover:text-black [overflow-wrap:anywhere]">
               {cls?.name ?? "Class"}
             </Link>
             <span className="text-neutral-300">/</span>
-            <span className="font-medium">Teaching Intelligence</span>
+            <span className="font-medium">Teaching Insights</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-2">
             {insightsGeneratedAt && (
               <span className="text-xs text-neutral-400 hidden sm:block">
-                Last run: {new Date(insightsGeneratedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                Last run: {new Date(insightsGeneratedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
               </span>
             )}
             <button
-              onClick={() => window.print()}
+              type="button"
+              onClick={() => void handleDownloadPdf()}
+              disabled={!insights}
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-neutral-300 bg-white text-sm font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
-              Print / PDF
+              Download PDF
+             </button>
+      <button
+              type="button"
+              onClick={handleDownloadCsv}
+        disabled={studentCount === 0}
+        className="px-4 py-2.5 rounded-xl border border-neutral-300 bg-white text-sm font-medium text-neutral-600 transition-colors hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Download class teaching intelligence as CSV"
+              data-testid="button-class-insights-csv"
+            >
+              Download CSV
             </button>
-            <button
+             <button
               onClick={handleSynthesise}
               disabled={synthesising || studentCount === 0}
               className="px-5 py-2.5 rounded-xl bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-700 transition-colors disabled:opacity-40 disabled:cursor-wait"
             >
-              {synthesising ? "Analysing…" : insights ? "Refresh Analysis" : "Generate AI Analysis"}
+              {synthesising ? "Analysing…" : insights ? "New Insight" : "Generate AI Analysis"}
             </button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-10 space-y-6">
+      <main className="max-w-5xl mx-auto px-6 py-10 space-y-6 [overflow-wrap:anywhere]">
 
         {/* Page title + stat strip */}
         <div className="rounded-[2rem] bg-white border border-neutral-200 p-8 shadow-sm">
-          <p className="text-xs uppercase tracking-[0.2em] text-neutral-400 mb-1">Teaching Intelligence</p>
+          <p className="text-xs uppercase tracking-[0.2em] text-neutral-400 mb-1">Teaching Insights</p>
           <h1 className="text-3xl font-semibold tracking-tight mb-1">{cls?.name ?? "Class"}</h1>
           {task && (
             <p className="text-neutral-500 mt-1 mb-6">
@@ -271,22 +457,30 @@ export default function TeacherClassInsights() {
           )}
 
           {studentCount > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4">
+             <div className="grid grid-cols-2 gap-4 mt-4 sm:grid-cols-3 2xl:grid-cols-6">
               <div className="rounded-2xl bg-neutral-50 border border-neutral-100 p-4 text-center">
                 <p className="text-3xl font-black text-neutral-900">{studentCount}</p>
-                <p className="text-xs text-neutral-400 mt-1 uppercase tracking-wider">Enrolled</p>
+                 <p className="mt-1 whitespace-nowrap text-[10px] leading-tight uppercase tracking-[0.12em] text-neutral-400 sm:text-[11px]">Students Enrolled</p>
               </div>
               <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4 text-center">
                 <p className="text-3xl font-black text-emerald-700">{fullyDoneStudents.length}</p>
-                <p className="text-xs text-emerald-500 mt-1 uppercase tracking-wider">Climbs Completed</p>
+                 <p className="mt-1 whitespace-nowrap text-[10px] leading-tight uppercase tracking-[0.12em] text-emerald-500 sm:text-[11px]">Climbs Complete</p>
               </div>
               <div className="rounded-2xl bg-amber-50 border border-amber-100 p-4 text-center">
                 <p className="text-3xl font-black text-amber-600">{inProgressStudents.length}</p>
-                <p className="text-xs text-amber-500 mt-1 uppercase tracking-wider">Climbs In Progress</p>
+                 <p className="mt-1 whitespace-nowrap text-[10px] leading-tight uppercase tracking-[0.12em] text-amber-500 sm:text-[11px]">Climbs Incomplete</p>
               </div>
               <div className="rounded-2xl bg-red-50 border border-red-100 p-4 text-center">
                 <p className="text-3xl font-black text-red-500">{notStartedStudents.length}</p>
-                <p className="text-xs text-red-400 mt-1 uppercase tracking-wider">Climbs Started</p>
+                 <p className="mt-1 whitespace-nowrap text-[10px] leading-tight uppercase tracking-[0.12em] text-red-400 sm:text-[11px]">Climbs Not Started</p>
+              </div>
+              <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4 text-center">
+                <p className="text-3xl font-black text-emerald-700">{completePercentage}%</p>
+                <p className="mt-1 whitespace-nowrap text-[10px] leading-tight uppercase tracking-[0.12em] text-emerald-500 sm:text-[11px]">Complete</p>
+              </div>
+              <div className="rounded-2xl bg-amber-50 border border-amber-100 p-4 text-center">
+                <p className="text-3xl font-black text-amber-600">{incompletePercentage}%</p>
+                <p className="mt-1 whitespace-nowrap text-[10px] leading-tight uppercase tracking-[0.12em] text-amber-500 sm:text-[11px]">Incomplete</p>
               </div>
             </div>
           )}
@@ -299,17 +493,17 @@ export default function TeacherClassInsights() {
               <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
               <h2 className="text-xs uppercase tracking-[0.2em] font-semibold text-red-500">Needs a nudge — not started</h2>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-3">
               {interventionStages.map((stage) => {
                 const students = stageCompletion[stage]?.noneStudents ?? [];
                 return (
-                  <div key={stage} className="flex items-start gap-4">
-                    <span className={`shrink-0 text-xs font-semibold px-2.5 py-1 rounded-full border ${STAGE_LIGHT[stage]}`}>
+                  <div key={stage} className="grid min-w-0 grid-cols-[6.5rem_minmax(0,1fr)] items-start gap-3 sm:grid-cols-[8rem_minmax(0,1fr)] sm:gap-4">
+                    <span className={`w-full text-center text-xs font-semibold px-2.5 py-2 rounded-xl border ${STAGE_LIGHT[stage]}`}>
                       {STAGE_DISPLAY[stage]}
                     </span>
-                    <div className="flex flex-wrap gap-2 pt-0.5">
+                    <div className="grid min-w-0 grid-cols-1 gap-2 pt-0 sm:grid-cols-2 xl:grid-cols-3">
                       {students.map((s) => (
-                        <Link key={s.id} href={`/teacher/class/${classId}/student/${s.id}`} className="px-3 py-1 rounded-full bg-white border border-red-200 text-sm text-red-700 font-medium shadow-sm hover:bg-red-50 transition-colors">
+                        <Link key={s.id} href={`/teacher/class/${classId}/student/${s.id}`} className="min-w-0 rounded-xl bg-white border border-red-200 px-3 py-2 text-sm text-red-700 font-medium shadow-sm transition-colors hover:bg-red-50 [overflow-wrap:anywhere]">
                           {s.name}
                         </Link>
                       ))}
@@ -328,18 +522,18 @@ export default function TeacherClassInsights() {
               <span className="w-2 h-2 rounded-full bg-amber-400" />
               <h2 className="text-xs uppercase tracking-[0.2em] font-semibold text-amber-600">In progress — started but not finished</h2>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-3">
               {STAGES.map((stage) => {
                 const students = stageCompletion[stage]?.startedStudents ?? [];
                 if (students.length === 0) return null;
                 return (
-                  <div key={stage} className="flex items-start gap-4">
-                    <span className={`shrink-0 text-xs font-semibold px-2.5 py-1 rounded-full border ${STAGE_LIGHT[stage]}`}>
+                  <div key={stage} className="grid min-w-0 grid-cols-[6.5rem_minmax(0,1fr)] items-start gap-3 sm:grid-cols-[8rem_minmax(0,1fr)] sm:gap-4">
+                    <span className={`w-full text-center text-xs font-semibold px-2.5 py-2 rounded-xl border ${STAGE_LIGHT[stage]}`}>
                       {STAGE_DISPLAY[stage]}
                     </span>
-                    <div className="flex flex-wrap gap-2 pt-0.5">
+                    <div className="grid min-w-0 grid-cols-1 gap-2 pt-0 sm:grid-cols-2 xl:grid-cols-3">
                       {students.map((s) => (
-                        <Link key={s.id} href={`/teacher/class/${classId}/student/${s.id}`} className="px-3 py-1 rounded-full bg-white border border-amber-200 text-sm text-amber-700 font-medium shadow-sm hover:bg-amber-50 transition-colors">
+                        <Link key={s.id} href={`/teacher/class/${classId}/student/${s.id}`} className="min-w-0 rounded-xl bg-white border border-amber-200 px-3 py-2 text-sm text-amber-700 font-medium shadow-sm transition-colors hover:bg-amber-50 [overflow-wrap:anywhere]">
                           {s.name}
                         </Link>
                       ))}
@@ -359,13 +553,13 @@ export default function TeacherClassInsights() {
           ) : (
             <div className="space-y-3">
               {/* Column headers */}
-              <div className="flex items-center gap-4">
-                <div className="w-28 shrink-0" />
+                <div className="flex items-center gap-2 sm:gap-4">
+                <div className="w-16 shrink-0 sm:w-28" />
                 <div className="flex-1" />
-                <div className="w-44 shrink-0 grid grid-cols-3 text-center">
-                  <span className="text-[10px] uppercase font-semibold text-emerald-600">Done</span>
-                  <span className="text-[10px] uppercase font-semibold text-amber-500">Started</span>
-                  <span className="text-[10px] uppercase font-semibold text-red-500">Incomplete</span>
+                  <div className="w-48 shrink-0 grid grid-cols-3 text-center">
+                    <span className="whitespace-nowrap text-[10px] uppercase font-semibold text-emerald-600">Done</span>
+                    <span className="whitespace-nowrap text-[10px] uppercase font-semibold text-amber-500">Started</span>
+                    <span className="whitespace-nowrap text-[10px] uppercase font-semibold text-red-500">Incomplete</span>
                 </div>
               </div>
               {STAGES.map((stage) => {
@@ -373,8 +567,8 @@ export default function TeacherClassInsights() {
                 const finPct = studentCount > 0 ? (counts.finished / studentCount) * 100 : 0;
                 const startPct = studentCount > 0 ? (counts.started / studentCount) * 100 : 0;
                 return (
-                  <div key={stage} className="flex items-center gap-4">
-                    <div className={`w-28 shrink-0 text-center text-xs font-semibold px-2.5 py-1.5 rounded-full border ${STAGE_LIGHT[stage]}`}>
+                  <div key={stage} className="flex items-center gap-2 sm:gap-4">
+                    <div className={`w-16 shrink-0 text-center text-xs font-semibold px-1 py-1.5 rounded-full border sm:w-28 sm:px-2.5 ${STAGE_LIGHT[stage]}`}>
                       {STAGE_DISPLAY[stage]}
                     </div>
                     <TooltipProvider delayDuration={100}>
@@ -414,7 +608,7 @@ export default function TeacherClassInsights() {
                         )}
                       </div>
                     </TooltipProvider>
-                    <div className="w-44 shrink-0 grid grid-cols-3 text-center">
+                    <div className="w-48 shrink-0 grid grid-cols-3 text-center">
                       <span className="text-base font-black text-emerald-600">{counts.finished}</span>
                       <span className="text-base font-black text-amber-500">{counts.started}</span>
                       <span className="text-base font-black text-red-500">{counts.none}</span>
@@ -426,124 +620,238 @@ export default function TeacherClassInsights() {
           )}
         </section>
 
-        {/* TORCH — Question Type Analysis */}
+        {/* TORCH — framework-aware question analysis */}
         {totalMessages > 0 && (
           <section className="rounded-[2rem] bg-white border border-neutral-200 p-8 shadow-sm">
-            <div className="flex items-start justify-between mb-6">
-              <div>
-                <h2 className="text-xs uppercase tracking-[0.2em] font-semibold text-neutral-400 mb-1">
-                  TORCH — How students asked questions
+            <div className="flex flex-col gap-5 border-b border-neutral-100 pb-6 md:flex-row md:items-start md:justify-between">
+              <div className="max-w-2xl">
+                <p className="text-xs uppercase tracking-[0.2em] font-semibold text-amber-600 mb-1">
+                   TORCH / {isKnowledgeDimensionsTask ? "Knowledge Dimensions" : "Question insights"}
+                </p>
+                <h2 className="text-2xl font-semibold tracking-tight text-neutral-900">
+                  {isKnowledgeDimensionsTask ? "Which knowledge dimensions are students using?" : "What kinds of questions are students asking?"}
                 </h2>
-                <p className="text-sm text-neutral-500">{totalMessages} AI messages across the class</p>
+                <p className="mt-2 text-sm leading-6 text-neutral-500">
+                   {totalMessages} AI messages across the class, grouped by {isKnowledgeDimensionsTask ? "knowledge-dimension signals" : "question type"}. Select <strong className="font-semibold text-neutral-700">Show examples</strong> on a row to see the questions behind its count.
+                </p>
               </div>
               {dominantType && (
-                <div className="flex gap-2 text-xs flex-wrap justify-end">
+                <div className="flex shrink-0 flex-wrap gap-2 md:max-w-[18rem] md:justify-end">
                   <span className="px-3 py-1.5 rounded-full bg-neutral-900 text-white font-medium">
-                    Most: {dominantType} ({questionTypeCounts[dominantType]})
+                     Most: {dominantType} ({analysisCounts[dominantType]})
                   </span>
                   {leastType && leastType !== dominantType && (
                     <span className="px-3 py-1.5 rounded-full bg-neutral-100 text-neutral-500 font-medium">
-                      Least: {leastType} ({questionTypeCounts[leastType]})
+                       Least: {leastType} ({analysisCounts[leastType]})
                     </span>
                   )}
                 </div>
               )}
             </div>
 
-            {/* Stacked overview bar */}
-            <div className="flex h-3 rounded-full overflow-hidden gap-px mb-6">
-              {(QUESTION_TYPES as string[]).map((type) => {
-                const pct = totalMessages > 0 ? ((questionTypeCounts[type] ?? 0) / totalMessages) * 100 : 0;
-                if (pct === 0) return null;
-                return <div key={type} className={QT[type]?.bg ?? "bg-neutral-300"} style={{ width: `${pct}%` }} title={`${type}: ${Math.round(pct)}%`} />;
-              })}
+            <div className="mt-6 rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4 sm:p-5">
+              <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                   <p className="text-sm font-semibold text-neutral-800">
+                     {isKnowledgeDimensionsTask ? "Knowledge dimension signals" : "Question type distribution"}
+                   </p>
+                   <p className="text-xs text-neutral-500">
+                     Share of all classified AI questions{isKnowledgeDimensionsTask ? "; reflection is shown separately as a learning-process signal" : ""}
+                   </p>
+                </div>
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">Count + share</span>
+              </div>
+              <div
+                className="flex h-3 overflow-hidden rounded-full gap-px"
+                role="img"
+                 aria-label={`Stacked bar showing the distribution of ${isKnowledgeDimensionsTask ? "knowledge dimension signals" : "question types"}`}
+              >
+                {(analysisTypes as readonly string[]).map((type) => {
+                  const pct = totalMessages > 0 ? ((analysisCounts[type] ?? 0) / totalMessages) * 100 : 0;
+                  if (pct === 0) return null;
+                  return <div key={type} className={analysisStyles[type]?.bg ?? "bg-neutral-300"} style={{ width: `${pct}%` }} title={`${type}: ${Math.round(pct)}%`} />;
+                })}
+              </div>
             </div>
 
-            {/* Per-type rows — all types, sorted highest first */}
-            <TooltipProvider delayDuration={200}>
-              <div className="space-y-2">
-                {(QUESTION_TYPES as string[])
+             {/* Per-type rows — all categories, sorted highest first */}
+            <div className="mt-4 space-y-2">
+                 {(analysisTypes as readonly string[])
                   .slice()
-                  .sort((a, b) => (questionTypeCounts[b] ?? 0) - (questionTypeCounts[a] ?? 0))
+                   .sort((a, b) => (analysisCounts[b] ?? 0) - (analysisCounts[a] ?? 0))
                   .map((type) => {
-                    const count = questionTypeCounts[type] ?? 0;
+                     const count = analysisCounts[type] ?? 0;
                     const pct = totalMessages > 0 ? Math.round((count / totalMessages) * 100) : 0;
-                    const qt = type as keyof typeof QUESTION_TYPE_META;
                     const isEmpty = count === 0;
-                    const c = QT[type] ?? { bg: "bg-neutral-300", text: "text-neutral-500", light: "bg-neutral-50" };
+                     const examples = analysisExamplesByType[type] ?? [];
+                    const isExpanded = expandedQuestionTypes[type] === true && !isEmpty;
+                     const c = analysisStyles[type] ?? { bg: "bg-neutral-300", text: "text-neutral-500", light: "bg-neutral-50" };
+                    const examplesId = `question-examples-${type.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
                     return (
-                      <div key={type} className={`flex items-center gap-3 ${isEmpty ? "opacity-35" : ""}`}>
-                        {/* Dot + label */}
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <div className="w-44 shrink-0 flex items-center gap-2.5 cursor-default">
-                              <span className={`w-3 h-3 rounded-full shrink-0 ${c.bg}`} />
-                              <span className={`text-sm font-semibold ${isEmpty ? "text-neutral-400" : "text-neutral-800"}`}>{type}</span>
-                            </div>
-                          </TooltipTrigger>
-                          <TooltipContent side="right" className="max-w-[320px] text-left p-3 bg-white text-neutral-900 border border-neutral-200 shadow-lg">
-                            <p className="font-semibold text-neutral-800 mb-2">{QUESTION_TYPE_META[qt].description}</p>
-                            {isEmpty ? (
-                              <p className="text-xs text-neutral-400 italic">No questions of this type yet.</p>
-                            ) : (
-                              <ul className="space-y-1 max-h-52 overflow-y-auto pr-1">
-                                {(data.torchMessages as any[])
-                                  .filter((m: any) => m.role === "user" && classifyQuestion(m.content) === type)
-                                  .map((m: any, i: number) => (
-                                    <li key={i} className="text-[11px] text-neutral-500">"{m.content}"</li>
-                                  ))}
-                              </ul>
-                            )}
-                          </TooltipContent>
-                        </Tooltip>
-                        {/* Bar */}
-                        <div className="flex-1 h-5 bg-neutral-100 rounded-full overflow-hidden">
-                          {pct > 0 && <div className={`h-full rounded-full ${c.bg}`} style={{ width: `${pct}%` }} />}
+                      <div key={type} className={`rounded-2xl border ${isExpanded ? "border-neutral-300 bg-white" : "border-transparent"} transition-colors ${isEmpty ? "opacity-35" : ""}`}>
+                        <div className="flex flex-wrap items-center gap-3 px-2 py-2">
+                          {/* Dot + label */}
+                          <div className="flex w-44 shrink-0 items-center gap-2.5">
+                            <span className={`h-3 w-3 shrink-0 rounded-full ${c.bg}`} />
+                            <span className={`text-sm font-semibold ${isEmpty ? "text-neutral-400" : "text-neutral-800"}`}>{type}</span>
+                          </div>
+                          {/* Bar */}
+                          <div className="min-w-[9rem] flex-1 h-5 bg-neutral-100 rounded-full overflow-hidden">
+                            {pct > 0 && <div className={`h-full rounded-full ${c.bg}`} style={{ width: `${pct}%` }} />}
+                          </div>
+                          {/* Numbers */}
+                          <div className="w-20 shrink-0 text-right">
+                            <span className={`text-sm font-black ${isEmpty ? "text-neutral-300" : "text-neutral-900"}`}>{pct}%</span>
+                            <span className="text-xs text-neutral-400 ml-1">({count})</span>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isEmpty}
+                            aria-expanded={isExpanded}
+                            aria-controls={examplesId}
+                             onClick={() => setExpandedQuestionTypes((current) => ({ ...current, [type]: !current[type] }))}
+                            className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-left text-xs font-semibold text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-neutral-400 sm:ml-auto sm:w-auto"
+                          >
+                            <span>{isExpanded ? "Hide examples" : "Show examples"}</span>
+                            {!isEmpty && <span className="ml-1 font-normal text-neutral-400">({examples.length})</span>}
+                            {!isEmpty && <span className="ml-2 text-neutral-400" aria-hidden="true">{isExpanded ? "↑" : "↓"}</span>}
+                          </button>
                         </div>
-                        {/* Numbers */}
-                        <div className="w-20 shrink-0 text-right">
-                          <span className={`text-sm font-black ${isEmpty ? "text-neutral-300" : "text-neutral-900"}`}>{pct}%</span>
-                          <span className="text-xs text-neutral-400 ml-1">({count})</span>
-                        </div>
+                        {isExpanded && (
+                          <div id={examplesId} className="mx-2 mb-2 rounded-xl border border-neutral-100 bg-neutral-50 px-4 py-3">
+                             <p className="text-xs font-semibold text-neutral-800">{analysisMeta[type as keyof typeof analysisMeta].description}</p>
+                            <p className="mt-1 text-[11px] text-neutral-500">Examples from this class:</p>
+                            <ul className="mt-2 grid gap-2 md:grid-cols-2">
+                              {examples.map((example, index) => (
+                                <li key={`${type}-${index}`} className="rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs leading-relaxed text-neutral-700">
+                                  “{example}”
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
-              </div>
-            </TooltipProvider>
+            </div>
 
-            {/* Question type key */}
-            <div className="mt-5 pt-5 border-t border-neutral-100 grid grid-cols-2 md:grid-cols-4 gap-3">
-              {(["Factual", "Conceptual", "Analytical", "Evaluative"] as const).map((t) => {
-                const c = QT[t];
-                return (
-                  <div key={t} className={`rounded-xl border border-neutral-100 p-3 ${c.light}`}>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`w-2.5 h-2.5 rounded-full ${c.bg}`} />
-                      <p className={`text-xs font-semibold ${c.text}`}>{t}</p>
+             {/* Taxonomy key */}
+            <div className="mt-6 border-t border-neutral-100 pt-5">
+              <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-neutral-500">
+                   {isKnowledgeDimensionsTask ? "What each knowledge signal means" : "What each question type means"}
+                 </p>
+                <p className="text-xs text-neutral-400">The buttons above show the class questions; these cards explain the categories.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                {(analysisTypes as readonly string[]).map((t) => {
+                  const c = analysisStyles[t] ?? { bg: "bg-neutral-300", text: "text-neutral-500", light: "bg-neutral-50" };
+                  return (
+                    <div key={t} className={`rounded-xl border border-neutral-100 p-3 ${c.light}`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`w-2.5 h-2.5 rounded-full ${c.bg}`} />
+                        <p className={`text-xs font-semibold ${c.text}`}>{t}</p>
+                      </div>
+                      <p className="text-[11px] text-neutral-500 leading-snug">{analysisMeta[t as keyof typeof analysisMeta].description}</p>
                     </div>
-                    <p className="text-[11px] text-neutral-500 leading-snug">{QUESTION_TYPE_META[t].description}</p>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </section>
         )}
 
-        {/* AI Teaching Intelligence */}
+        {insightHistory.length > 1 && (
+          <div className="space-y-3" aria-label="Previous teaching intelligence reports">
+            {insightHistory.slice(0, -1).map((report, index) => (
+              <details key={`${report.generatedAt}-${index}`} className="group overflow-hidden rounded-[2rem] border border-neutral-300 bg-white shadow-sm">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-8 py-5 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-inset [&::-webkit-details-marker]:hidden">
+                  <div className="min-w-0">
+                    <p className="text-xs uppercase tracking-[0.2em] font-semibold text-neutral-400">Previous AI analysis</p>
+                    <p className="mt-1 text-sm font-medium text-neutral-700">
+                      Generated {new Date(report.generatedAt).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2" onClick={(event) => event.stopPropagation()}>
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadHistoricalPdf(report, index)}
+                      className="rounded-full border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-500 transition-colors hover:border-neutral-400 hover:text-neutral-800"
+                      aria-label={`Download PDF for report generated ${new Date(report.generatedAt).toLocaleDateString("en-GB")}`}
+                      data-testid={`button-previous-teaching-intelligence-pdf-${index}`}
+                    >
+                      PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadHistoricalCsv(report, index)}
+                      className="rounded-full border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-500 transition-colors hover:border-neutral-400 hover:text-neutral-800"
+                      aria-label={`Download CSV for report generated ${new Date(report.generatedAt).toLocaleDateString("en-GB")}`}
+                      data-testid={`button-previous-teaching-intelligence-csv-${index}`}
+                    >
+                      CSV
+                    </button>
+                    <span className="rounded-full border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-500 transition-colors group-open:bg-neutral-900 group-open:text-white">
+                      View report
+                    </span>
+                  </div>
+                </summary>
+                <div className="border-t border-neutral-200">
+                  <InsightReportContent insights={report} />
+                </div>
+              </details>
+            ))}
+          </div>
+        )}
+
+        {/* AI Teaching Insights */}
         {insights ? (
           <section id="teaching-intelligence-report" className="rounded-[2rem] bg-white border-2 border-neutral-900 shadow-sm overflow-hidden">
             <div className="border-b border-neutral-200 px-8 py-6 flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] font-semibold text-neutral-400 mb-1">AI Analysis</p>
-                <h2 className="text-2xl font-semibold tracking-tight">Teaching Intelligence</h2>
+                <h2 className="text-2xl font-semibold tracking-tight">Teaching Insights</h2>
                 {insightsGeneratedAt && (
                   <p className="text-xs text-neutral-400 mt-1">
-                    Generated {new Date(insightsGeneratedAt).toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    Generated {new Date(insightsGeneratedAt).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}
                   </p>
                 )}
               </div>
-              <div className="flex gap-2 shrink-0 mt-1">
+              <div className="flex flex-wrap justify-end gap-2 shrink-0 mt-1">
                 <button
+                  type="button"
+                  onClick={() => void handleDownloadPdf()}
+                  className="rounded-full border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-500 transition-colors hover:border-neutral-400 hover:text-neutral-800"
+                  aria-label="Download current Teaching Insights as PDF"
+                  data-testid="button-current-teaching-intelligence-pdf"
+                  data-export-controls
+                >
+                  PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadCsv}
+                  disabled={studentCount === 0}
+                  className="rounded-full border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-500 transition-colors hover:border-neutral-400 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="Download current Teaching Insights as CSV"
+                  data-testid="button-current-teaching-intelligence-csv"
+                  data-export-controls
+                >
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportOpen((open) => !open)}
+                  aria-expanded={reportOpen}
+                  aria-controls="teaching-intelligence-report-content"
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl border border-neutral-200 bg-white text-sm font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
+                  data-testid="button-toggle-teaching-intelligence"
+                >
+                  <span aria-hidden="true">{reportOpen ? "−" : "+"}</span>
+                  {reportOpen ? "Collapse report" : "Expand report"}
+                </button>
+                <button
+                  type="button"
                   onClick={handleCopy}
                   className="flex items-center gap-2 px-4 py-2 rounded-xl border border-neutral-200 bg-white text-sm font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
                 >
@@ -553,17 +861,10 @@ export default function TeacherClassInsights() {
                     <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>Copy</>
                   )}
                 </button>
-                <button
-                  onClick={handlePrintReport}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl border border-neutral-900 bg-neutral-900 text-sm font-medium text-white hover:bg-neutral-700 transition-colors"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                  Download PDF
-                </button>
               </div>
             </div>
 
-            <div className="p-8 space-y-8">
+            <div id="teaching-intelligence-report-content" className={`${reportOpen ? "" : "hidden"} report-collapsible-content p-8 space-y-8`}>
               {insights.questionTypeInsight && (
                 <div>
                   <p className="text-xs uppercase tracking-widest font-semibold text-amber-500 mb-3">What the questions tell you</p>

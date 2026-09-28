@@ -8,6 +8,7 @@
     "./schema": "./src/schema/index.ts"
   },
   "scripts": {
+    "migrate": "node scripts/run-migrations.mjs",
     "push": "drizzle-kit push --config ./drizzle.config.ts",
     "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
   },
@@ -18,7 +19,6 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@esbuild/darwin-arm64": "^0.28.1",
     "@types/node": "catalog:",
     "@types/pg": "^8.20.0",
     "drizzle-kit": "^0.31.10"

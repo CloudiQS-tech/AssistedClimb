@@ -16,6 +16,8 @@ tags:
     description: Teacher operations
   - name: student
     description: Student operations
+  - name: admin
+    description: CIG Platform Administrator operations
 paths:
   /healthz:
     get:
@@ -31,11 +33,74 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
+  /admin/activity-log/report:
+    get:
+      operationId: exportPlatformActivityLogReport
+      tags: [admin]
+      summary: Export a redacted Platform Activity Log report
+      description: Returns a bounded CSV report using the selected activity category, action, and UTC date filters. Access is limited to the Master CIG administrator.
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [administrator-security, school-administration]
+        - name: action
+          in: query
+          schema:
+            type: string
+          description: Valid platform activity action
+        - name: from
+          in: query
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: Inclusive start date in UTC
+        - name: to
+          in: query
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: Inclusive end date in UTC
+      responses:
+        "200":
+          description: Redacted CSV activity report, bounded to 500 matching entries
+          headers:
+            X-Activity-Report-Count:
+              schema:
+                type: integer
+            X-Activity-Report-Truncated:
+              schema:
+                type: boolean
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          description: Invalid activity filters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Master CIG administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /auth/register:
     post:
       operationId: registerTeacher
       tags: [auth]
       summary: Register a teacher
+      description: A valid school invite code is required. Registration remains pending until a school administrator approves it.
       requestBody:
         required: true
         content:
@@ -44,11 +109,11 @@ paths:
               $ref: "#/components/schemas/TeacherRegistration"
       responses:
         "201":
-          description: Registered
+          description: Registered and awaiting school approval; email verification and authenticator setup are still required.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TeacherProfile"
+                $ref: "#/components/schemas/TeacherRegistrationPendingResponse"
         "400":
           description: Validation error
           content:
@@ -87,6 +152,90 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /auth/verify-email:
+    get:
+      operationId: verifyTeacherEmail
+      tags: [auth]
+      summary: Verify a teacher email address with a single-use link
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 40
+            maxLength: 200
+      responses:
+        "200":
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherEmailVerificationResult"
+        "400":
+          description: Invalid, expired, or already-used verification link
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/resend-verification:
+    post:
+      operationId: resendTeacherEmailVerification
+      tags: [auth]
+      summary: Send a new teacher email verification link
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeacherEmailVerificationInput"
+      responses:
+        "200":
+          description: Verification request accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherEmailVerificationResult"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/session/restore:
+    post:
+      operationId: restoreTeacherSession
+      tags: [auth]
+      summary: Restore a one-time post-MFA teacher session
+      description: Exchanges a short-lived, single-use handoff ticket for a new secure server session after an embedded webview loses the initial session cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeacherSessionRestoreInput"
+      responses:
+        "200":
+          description: Session restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherSessionRestoreResponse"
+        "400":
+          description: Invalid session recovery request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Expired or already-used session recovery ticket
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /auth/me:
     get:
       operationId: getTeacherMe
@@ -114,6 +263,1058 @@ paths:
       responses:
         "204":
           description: Logged out
+
+  /teacher/org/teachers:
+    get:
+      operationId: listOrganisationTeachers
+      tags: [teacher]
+      summary: List teachers in the current school
+      description: Returns a school-scoped, filtered, sorted, and paginated teacher directory for School Admins and permitted School Sub-admins.
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 120
+          description: Case-insensitive match against teacher name or email
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [all, active, suspended, deleted]
+            default: active
+        - name: approvalStatus
+          in: query
+          schema:
+            type: string
+            enum: [all, pending, approved, rejected]
+            default: all
+        - name: from
+          in: query
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: Inclusive account creation date in UTC
+        - name: to
+          in: query
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: Inclusive account creation date in UTC
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [name, createdAt, status]
+            default: name
+        - name: direction
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        "200":
+          description: School-scoped teacher directory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherDirectoryResponse"
+        "400":
+          description: Invalid directory filters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No school is associated with the current teacher
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/teacher/{id}/approve:
+    post:
+      operationId: approveTeacherRegistration
+      tags: [teacher]
+      summary: Approve a pending teacher registration
+      description: School Admins and permitted School Sub-admins may approve a pending registration in their own school.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Registration approved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeacherApprovalDecision" }
+        "400": { description: Invalid request }
+        "403": { description: School administrator access required }
+        "409": { description: Registration has already been reviewed }
+
+  /teacher/org/teacher/{id}/reject:
+    post:
+      operationId: rejectTeacherRegistration
+      tags: [teacher]
+      summary: Reject a pending teacher registration
+      description: School Admins and permitted School Sub-admins may reject a pending registration in their own school, with an auditable reason.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TeacherApprovalRejection" }
+      responses:
+        "200":
+          description: Registration rejected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeacherApprovalDecision" }
+        "400": { description: Invalid request }
+        "403": { description: School administrator access required }
+        "409": { description: Registration has already been reviewed }
+
+  /teacher/org/teacher/{id}/departure-summary:
+    get:
+      operationId: getTeacherDepartureSummary
+      tags: [teacher]
+      summary: Review records before a teacher departure
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: School-scoped summary of the departing teacher's records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherDepartureSummary"
+        "400":
+          description: Invalid teacher account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Teacher not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/teacher/{id}/departure:
+    post:
+      operationId: manageTeacherDeparture
+      tags: [teacher]
+      summary: Archive or transfer a departing teacher's records
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeacherDepartureInput"
+      responses:
+        "200":
+          description: Teacher access was removed and records were transferred or archived
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherDepartureResult"
+        "400":
+          description: Invalid departure choice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Departure record changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/teacher/{id}/restore:
+    post:
+      operationId: restoreTeacherAccount
+      tags: [teacher]
+      summary: Restore a deleted teacher account during the recovery period
+      description: A School Master may restore a deleted teacher in the same organisation only until accountStatusChangedAt plus deletionRecoveryDays.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Teacher account restored without reclaiming transferred classes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherRestoreResult"
+        "400": { description: Invalid teacher restore request }
+        "403": { description: School Master access required }
+        "404": { description: Teacher not found in the organisation }
+        "409": { description: "Account is not deleted, changed, or outside recovery period" }
+
+  /teacher/org/record-archives:
+    get:
+      operationId: listTeacherRecordArchives
+      tags: [teacher]
+      summary: List archived departing-teacher records
+      responses:
+        "200":
+          description: School-scoped teacher record archives
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherRecordArchiveList"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/classes/{classId}/transfer:
+    post:
+      operationId: transferOrganisationClass
+      tags: [teacher]
+      summary: Transfer one active class to another active teacher
+      description: School Masters may transfer a class within their organisation without changing either teacher account.
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrganisationClassTransferInput"
+      responses:
+        "200":
+          description: Class ownership was transferred
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganisationClassTransferResult"
+        "400": { description: Invalid transfer request }
+        "403": { description: School Master access required }
+        "404": { description: Class not found in the organisation }
+        "409": { description: "Class is archived, scheduled for deletion, or changed" }
+
+  /teacher/org/record-archives/{archiveId}:
+    get:
+      operationId: getTeacherRecordArchive
+      tags: [teacher]
+      summary: View a read-only archived teacher record
+      parameters:
+        - name: archiveId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: School-scoped archived classes and student record summaries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherRecordArchiveDetail"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Archive not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Archive retention date has ended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/record-archives/{archiveId}/classes/{classId}/action:
+    post:
+      operationId: actOnArchivedTeacherClass
+      tags: [teacher]
+      summary: Restore or schedule deletion for one archived class
+      description: School Masters may restore an archived class to an active same-school teacher or schedule its recoverable deletion.
+      parameters:
+        - name: archiveId
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: classId
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchivedTeacherClassActionInput"
+      responses:
+        "200":
+          description: Archived class action completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArchivedTeacherClassActionResult"
+        "400": { description: Invalid archived-class action or replacement teacher }
+        "403": { description: School Master access required }
+        "404": { description: Archive or class not found }
+        "409": { description: "Archive retention, legal hold, request control, or class lifecycle conflict" }
+
+  /teacher/org/record-archives/{archiveId}/classes/{classId}/students/{sessionId}:
+    post:
+      operationId: accessArchivedTeacherStudentRecord
+      tags: [teacher]
+      summary: View detailed student work and chats within an archived teacher record
+      parameters:
+        - name: archiveId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchivedRecordAccessRequest"
+      responses:
+        "200":
+          description: Retained student learning record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherRecordArchiveStudentDetail"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Archived class or student record not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Archive retention date has ended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Audit record could not be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/record-archives/{archiveId}/export:
+    post:
+      operationId: exportTeacherRecordArchive
+      tags: [teacher]
+      summary: Export detailed student work and chats from an archived teacher record
+      parameters:
+        - name: archiveId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchivedRecordAccessRequest"
+      responses:
+        "200":
+          description: Detailed school-scoped archive export
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherRecordArchiveExport"
+        "400":
+          description: Purpose statement or confirmation is invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Archive not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Archive retention date has ended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Audit record could not be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/record-archives/{archiveId}/permanent-delete:
+    post:
+      operationId: permanentlyDeleteTeacherRecordArchive
+      tags: [teacher]
+      summary: Permanently delete an expired teacher record archive
+      parameters:
+        - name: archiveId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeacherRecordArchivePermanentDeleteInput"
+      responses:
+        "200":
+          description: Archived live records permanently deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherRecordArchivePermanentDeleteResult"
+        "400":
+          description: Invalid permanent deletion confirmation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Archive not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Archive retention date has not ended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/status:
+    get:
+      operationId: getSessionStatus
+      tags: [auth]
+      summary: Get the current authenticated session expiry state
+      responses:
+        "200":
+          description: Session expiry state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStatus"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/keep-alive:
+    post:
+      operationId: keepSessionAlive
+      tags: [auth]
+      summary: Record recent meaningful client activity for the current session
+      responses:
+        "200":
+          description: Updated session expiry state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStatus"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/ai-settings:
+    get:
+      operationId: getOrganisationAiSettings
+      tags: [teacher]
+      summary: Get school AI configuration and approval evidence
+      responses:
+        "200":
+          description: AI settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgAiSettings"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School IT administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      operationId: updateOrganisationAiSettings
+      tags: [teacher]
+      summary: Save school AI configuration and approval evidence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrgAiSettingsInput"
+      responses:
+        "200":
+          description: Approved AI settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgAiSettings"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: A school-wide default policy must be saved before adding an exception
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School IT administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/retention-policy:
+    get:
+      operationId: getOrganisationRetentionPolicySchedule
+      tags: [teacher]
+      summary: Get the school-wide retention policy and category exceptions
+      responses:
+        "200":
+          description: School-wide default policy and category exceptions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetentionPolicySchedule"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/data-request-procedure:
+    get:
+      operationId: getSchoolDataRequestProcedure
+      tags: [teacher]
+      summary: Get the school-approved student data request procedure settings
+      responses:
+        "200":
+          description: Current school procedure, or null before publication
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchoolDataRequestProcedureResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      operationId: publishSchoolDataRequestProcedure
+      tags: [teacher]
+      summary: Approve and publish the school-specific student data request procedure
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchoolDataRequestProcedureInput"
+      responses:
+        "200":
+          description: Published procedure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchoolDataRequestProcedure"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Procedure or audit record could not be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/retention-policy/default:
+    put:
+      operationId: updateOrganisationDefaultRetentionPolicy
+      tags: [teacher]
+      summary: Create or update the school-wide default retention policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRetentionPolicyInput"
+      responses:
+        "200":
+          description: Saved school-wide default retention policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetentionPolicy"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/retention-policy/default/verify:
+    post:
+      operationId: verifyOrganisationDefaultRetentionOperator
+      tags: [teacher]
+      summary: Record School Admin verification before the default retention policy can process due records
+      responses:
+        "200":
+          description: Verified default retention policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetentionPolicy"
+        "404":
+          description: No default retention policy is recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/retention-policies:
+    get:
+      operationId: listOrganisationRetentionPolicies
+      tags: [teacher]
+      summary: List school retention policies
+      responses:
+        "200":
+          description: Retention policies
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RetentionPolicy"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School IT administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/retention-policies/{category}:
+    put:
+      operationId: updateOrganisationRetentionPolicy
+      tags: [teacher]
+      summary: Create or update a school retention policy
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [student_learning_records, ai_conversations, student_activity, completed_climbs, teacher_account_records, security_audit_logs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRetentionPolicyInput"
+      responses:
+        "200":
+          description: Saved retention policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetentionPolicy"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: A school-wide default policy must be saved before adding an exception
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School IT administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteOrganisationRetentionPolicyException
+      tags: [teacher]
+      summary: Remove a category exception so it uses the school-wide default
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [student_learning_records, ai_conversations, student_activity, completed_climbs, teacher_account_records, security_audit_logs]
+      responses:
+        "204":
+          description: Category exception removed
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: A school-wide default policy must be saved before removing an exception
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Category exception not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/retention-policies/{category}/verify:
+    post:
+      operationId: verifyOrganisationRetentionPolicyOperator
+      tags: [teacher]
+      summary: Record School Admin verification before a retention exception can process due records
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [student_learning_records, ai_conversations, student_activity, completed_climbs, teacher_account_records, security_audit_logs]
+      responses:
+        "200":
+          description: Verified retention policy exception
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetentionPolicy"
+
+  /teacher/org/retention-policy/run:
+    post:
+      operationId: runOrganisationRetentionPolicy
+      tags: [teacher]
+      summary: Run the approved school retention policy and return redacted category outcomes
+      responses:
+        "200":
+          description: Retention processing outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organisationId, processed]
+                properties:
+                  organisationId:
+                    type: integer
+                  processed:
+                    type: array
+                    items:
+                      type: object
+                      required: [dataCategory, recordsAffected, outcome]
+                      properties:
+                        dataCategory: { type: string }
+                        recordsAffected: { type: integer }
+                        outcome: { type: string, enum: [deleted, anonymised, blocked] }
+                        reason: { type: string, enum: [policy_not_scheduled, legal_hold, missing_operator_verification] }
+  /teacher/org/research-governance:
+    get:
+      operationId: getOrganisationResearchGovernance
+      tags: [teacher]
+      summary: Get the school's research-processing governance status
+      responses:
+        "200":
+          description: Research governance status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResearchGovernance"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School IT administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/compliance-evidence:
+    get:
+      operationId: exportOrganisationComplianceEvidence
+      tags: [teacher]
+      summary: Export redacted school compliance evidence
+      responses:
+        "200":
+          description: Redacted compliance evidence report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceEvidenceReport"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School IT administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Evidence audit record could not be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /teacher/classes:
     post:
@@ -159,6 +1360,219 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /teacher/archive:
+    get:
+      operationId: listTeacherArchive
+      tags: [teacher]
+      summary: List archived and recoverable-deletion classes
+      description: Returns the current teacher's archived classes and pending class deletions. School Admins receive archived classes and pending deletions for teachers in their school.
+      responses:
+        "200":
+          description: School-scoped teacher archive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherArchiveResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/dashboard/overview:
+    get:
+      operationId: getTeacherDashboardOverview
+      tags: [teacher]
+      summary: Get cross-class teacher progress overview
+      responses:
+        "200":
+          description: Cross-class progress and approval metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherDashboardOverview"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/task-templates:
+    get:
+      operationId: listTaskTemplates
+      tags: [teacher]
+      summary: List the current teacher's reusable task templates
+      responses:
+        "200":
+          description: Reusable task templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskTemplateRecord"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createTaskTemplate
+      tags: [teacher]
+      summary: Create a reusable task template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskTemplateInput"
+      responses:
+        "201":
+          description: Template created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskTemplateRecord"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/task-templates/{templateId}:
+    put:
+      operationId: updateTaskTemplate
+      tags: [teacher]
+      summary: Update a reusable task template
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskTemplateInput"
+      responses:
+        "200":
+          description: Template updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskTemplateRecord"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Template not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteTaskTemplate
+      tags: [teacher]
+      summary: Delete a reusable task template
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Template deleted
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Template not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/task-templates/{templateId}/duplicate:
+    post:
+      operationId: duplicateTaskTemplate
+      tags: [teacher]
+      summary: Duplicate a task template as a draft
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: Template duplicated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskTemplateRecord"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Template not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/task-templates/{templateId}/apply:
+    post:
+      operationId: applyTaskTemplate
+      tags: [teacher]
+      summary: Apply a template to one or more active classes
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApplyTaskTemplateInput"
+      responses:
+        "200":
+          description: Template applied without changing existing student work
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskTemplateApplyResult"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Template or class not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /teacher/classes/{classId}:
     get:
       operationId: getClass
@@ -185,6 +1599,53 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      operationId: updateClass
+      tags: [teacher]
+      summary: Update a class name and subject
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClassUpdate"
+      responses:
+        "200":
+          description: Updated class detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassDetail"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Archived or deletion-scheduled classes cannot be edited
           content:
             application/json:
               schema:
@@ -281,6 +1742,147 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /teacher/classes/{classId}/task/generate:
+    post:
+      operationId: generateClassTaskSuggestion
+      tags: [teacher]
+      summary: Generate a reviewable task suggestion
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskSuggestionInput"
+      responses:
+        "200":
+          description: Reviewable task suggestion
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSuggestion"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: AI is not available for this school
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Class not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Archived class cannot generate content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Teacher research limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: AI provider is temporarily unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/task/reopen:
+    post:
+      operationId: reopenClassTask
+      tags: [teacher]
+      summary: Reopen a class task for late student editing
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Reopened task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskRecord"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The class is archived
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Class or task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/task/close:
+    post:
+      operationId: closeClassTask
+      tags: [teacher]
+      summary: End late editing for a reopened class task
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Task with late editing ended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskRecord"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The class is archived
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Class or task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /teacher/classes/{classId}/students:
     get:
       operationId: listClassStudents
@@ -309,6 +1911,49 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students/bulk-review:
+    post:
+      operationId: bulkReviewStudentRegistrations
+      tags: [teacher]
+      summary: Approve or reject multiple pending student registrations
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkReviewStudentsInput"
+      responses:
+        "200":
+          description: Registrations reviewed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkReviewStudentsResponse"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Class not found
           content:
             application/json:
               schema:
@@ -346,6 +1991,116 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /teacher/classes/{classId}/students/{sessionId}/messages:
+    get:
+      operationId: listTeacherStudentMessages
+      tags: [teacher]
+      summary: List and mark read messages for one student Climb
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Complete ordered conversation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherStudentMessagesResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Class or student not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: sendTeacherMessage
+      tags: [teacher]
+      summary: Send a plain-text message to an approved student
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendTeacherMessageInput"
+      responses:
+        "201":
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherMessage"
+        "400":
+          description: Invalid message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Class or student not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students/{sessionId}/lock-assessment:
+    post:
+      operationId: lockStudentWork
+      tags: [teacher]
+      summary: Temporarily lock a student's work
+      parameters:
+        - { name: classId, in: path, required: true, schema: { type: integer } }
+        - { name: sessionId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Work locked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssessmentLockResult"
+        "404": { description: Class or student not found }
+        "409": { description: Student record cannot be locked }
+
+  /teacher/classes/{classId}/students/{sessionId}/unlock-assessment:
+    post:
+      operationId: unlockStudentWork
+      tags: [teacher]
+      summary: Unlock temporarily locked student work
+      description: A completed climb cannot be unlocked.
+      parameters:
+        - { name: classId, in: path, required: true, schema: { type: integer } }
+        - { name: sessionId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "204": { description: Work unlocked }
+        "404": { description: Class or student not found }
+        "409": { description: "Completed, archived, or deleting student record" }
+
   /teacher/classes/{classId}/students/{sessionId}:
     get:
       operationId: getStudentDetail
@@ -377,6 +2132,209 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students/{sessionId}/restore-archive:
+    post:
+      operationId: restoreArchivedStudentRecord
+      tags: [teacher]
+      summary: Restore an archived student record to active records
+      description: The owning teacher or a School Master in the same organisation may restore an archived record. Sub-admins have no organisation-wide restoration access. Pending-deletion records must use the separate deletion recovery endpoint.
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestoreArchivedStudentRecordInput"
+      responses:
+        "200":
+          description: Archived student record restored without changing its class or content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreArchivedStudentRecordResult"
+        "400":
+          description: Invalid student record or confirmation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Student record not found in an authorised class
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Record is not archived, pending deletion, class lifecycle is not active, or an active hold/restriction blocks restoration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students/{sessionId}/approve:
+    post:
+      operationId: approveStudentRegistration
+      tags: [teacher]
+      summary: Approve a pending student registration
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Registration approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentRegistrationResult"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students/{sessionId}/reject:
+    post:
+      operationId: rejectStudentRegistration
+      tags: [teacher]
+      summary: Reject a pending student registration
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Registration rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentRegistrationResult"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students/{sessionId}/rejection:
+    delete:
+      operationId: deleteRejectedStudentRegistration
+      tags: [teacher]
+      summary: Remove a rejected student registration
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Rejected registration removed
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/classes/{classId}/students/{sessionId}/activity:
+    get:
+      operationId: getTeacherStudentActivity
+      tags: [teacher]
+      summary: Get an individual student's activity log
+      parameters:
+        - name: classId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Student activity log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentActivityLog"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Student activity access is not permitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Student not found in this teacher's class
           content:
             application/json:
               schema:
@@ -432,6 +2390,67 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /student/teacher-messages:
+    get:
+      operationId: listStudentTeacherMessages
+      tags: [student]
+      summary: List messages sent by teachers for the current Climb
+      parameters:
+        - name: markRead
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Teacher messages and unread count
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentTeacherMessagesResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: sendStudentTeacherMessage
+      tags: [student]
+      summary: Reply in the current Climb message conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendTeacherMessageInput"
+      responses:
+        "201":
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeacherMessage"
+        "400":
+          description: Invalid message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Message sending is unavailable for this Climb
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /student/join:
     post:
       operationId: studentJoin
@@ -475,6 +2494,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StudentSessionInfo"
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/activity:
+    get:
+      operationId: getStudentActivity
+      tags: [student]
+      summary: Get the current student's activity log
+      responses:
+        "200":
+          description: Student activity log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentActivityLog"
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/activity/heartbeat:
+    post:
+      operationId: recordStudentActivityHeartbeat
+      tags: [student]
+      summary: Record active time for the current student session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudentActivityHeartbeatInput"
+      responses:
+        "204":
+          description: Activity recorded
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /student/activity/pause:
+    post:
+      operationId: pauseStudentActivity
+      tags: [student]
+      summary: Stop recording active time when the student leaves the Climb page
+      responses:
+        "204":
+          description: Activity paused
         "401":
           description: No active session
           content:
@@ -610,8 +2684,315 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Student or school AI request limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "503":
           description: AI provider not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/student-data-request-students:
+    get:
+      operationId: listStudentDataRequestStudents
+      tags: [teacher]
+      summary: Find students in the current school for a student data request
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 120
+      responses:
+        "200":
+          description: School-scoped student search results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StudentDataRequestStudent"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/student-data-requests:
+    get:
+      operationId: listStudentDataRequests
+      tags: [teacher]
+      summary: List student data requests for the current school
+      responses:
+        "200":
+          description: School-scoped student data requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentDataRequestList"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createStudentDataRequest
+      tags: [teacher]
+      summary: Record a student data request for one student in the current school
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudentDataRequestInput"
+      responses:
+        "201":
+          description: Recorded student data request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentDataRequest"
+        "400":
+          description: Validation or approval-basis error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Student not in the current school
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Audit evidence could not be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/student-data-requests/{id}:
+    patch:
+      operationId: updateStudentDataRequest
+      tags: [teacher]
+      summary: Record a student data request outcome and review basis
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudentDataRequestUpdate"
+      responses:
+        "200":
+          description: Updated student data request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentDataRequest"
+        "400":
+          description: Validation, approval-basis, or outcome error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Request not in the current school
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Audit evidence could not be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/student-data-request-controls:
+    get:
+      operationId: listStudentDataRequestControls
+      tags: [teacher]
+      summary: List immutable restriction and hold evidence for the current school
+      responses:
+        "200":
+          description: School-scoped controls and their append-only event history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentDataRequestControlList"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/student-data-requests/{id}/controls:
+    post:
+      operationId: createStudentDataRequestControl
+      tags: [teacher]
+      summary: Apply a request-linked restriction or legal/safeguarding hold
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudentDataRequestControlInput"
+      responses:
+        "201":
+          description: Applied control
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentDataRequestControl"
+        "400":
+          description: Invalid control scope, reason, or dates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Request not in the current school
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Control or audit evidence could not be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/student-data-requests/{id}/controls/{controlId}:
+    patch:
+      operationId: updateStudentDataRequestControl
+      tags: [teacher]
+      summary: Append a review, expiry confirmation, or lifting event
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: controlId
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudentDataRequestControlAction"
+      responses:
+        "200":
+          description: Updated current state with appended immutable event
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentDataRequestControl"
+        "400":
+          description: Invalid action evidence
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Control not in the current school and request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Control already ended or expiry is not due
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Control or audit evidence could not be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/org/student-data-requests/{id}/export:
+    get:
+      operationId: exportStudentDataRequest
+      tags: [teacher]
+      summary: Export only the requested student's school-scoped data
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Minimal student data export
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentDataRequestExport"
+        "404":
+          description: Request not in the current school
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Export not available for this request or student record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Audit evidence could not be stored
           content:
             application/json:
               schema:
@@ -635,6 +3016,327 @@ components:
       required:
         - error
 
+    RestoreArchivedStudentRecordInput:
+      type: object
+      properties:
+        confirmation:
+          type: string
+          enum: ["RESTORE TO ACTIVE RECORDS"]
+      required: [confirmation]
+
+    RestoreArchivedStudentRecordResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        restored:
+          type: boolean
+        classId:
+          type: integer
+        sessionId:
+          type: integer
+        restoredAt:
+          type: string
+          format: date-time
+      required: [ok, restored, classId, sessionId, restoredAt]
+
+    StudentDataRequestStudent:
+      type: object
+      properties:
+        id:
+          type: integer
+        studentName:
+          type: string
+        classId:
+          type: integer
+        className:
+          type: string
+        classArchivedAt:
+          type: ["string", "null"]
+          format: date-time
+      required: [id, studentName, classId, className, classArchivedAt]
+
+    StudentDataRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+        studentSessionId:
+          type: ["integer", "null"]
+        studentName:
+          type: string
+        classId:
+          type: ["integer", "null"]
+        className:
+          type: string
+        requestType:
+          type: string
+          enum: [access, correction, deletion]
+        reason:
+          type: string
+        approvalBasis:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [open, in_review, completed, refused, escalated]
+        outcome:
+          type: ["string", "null"]
+        exportCount:
+          type: integer
+        lastExportedAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: ["string", "null"]
+          format: date-time
+      required: [id, studentSessionId, studentName, classId, className, requestType, reason, approvalBasis, status, outcome, exportCount, lastExportedAt, createdAt, updatedAt, completedAt]
+
+    StudentDataRequestList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudentDataRequest"
+      required: [items]
+
+    StudentDataRequestInput:
+      type: object
+      properties:
+        studentSessionId:
+          type: integer
+          minimum: 1
+        requestType:
+          type: string
+          enum: [access, correction, deletion]
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 2000
+        approvalBasis:
+          type: string
+          minLength: 3
+          maxLength: 2000
+      required: [studentSessionId, requestType, reason]
+
+    StudentDataRequestUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [open, in_review, completed, refused, escalated]
+        outcome:
+          type: string
+          minLength: 3
+          maxLength: 2000
+        approvalBasis:
+          type: string
+          minLength: 3
+          maxLength: 2000
+      required: [status]
+
+    StudentDataRequestControlInput:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [restriction, legal_hold, safeguarding_hold]
+        reasonCategory:
+          type: string
+          enum: [accuracy_dispute, objection, legal_claim, complaint, investigation, safeguarding, retention_duty, other]
+        reasonSummary:
+          type: string
+          minLength: 3
+          maxLength: 160
+          description: Minimal reason reference only; do not include student content or safeguarding narrative.
+        affectedDataCategories:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          items:
+            type: string
+            enum: [identity, learning, activity, feedback, ai_conversations]
+        accessLimits:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            type: string
+            enum: [export]
+        processingLimits:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            type: string
+            enum: [deletion, export]
+        startDate:
+          type: string
+          format: date
+        reviewDate:
+          type: string
+          format: date
+        expiryDate:
+          type: ["string", "null"]
+          format: date
+      required: [kind, reasonCategory, reasonSummary, affectedDataCategories, accessLimits, processingLimits, startDate, reviewDate]
+
+    StudentDataRequestControlAction:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [review, expire, lift]
+        note:
+          type: string
+          minLength: 3
+          maxLength: 240
+      required: [action, note]
+
+    StudentDataRequestControlEvent:
+      type: object
+      properties:
+        id: { type: integer }
+        eventType:
+          type: string
+          enum: [applied, reviewed, expired, lifted]
+        note: { type: string }
+        lifecycleState:
+          type: string
+          enum: [active, expired, lifted]
+        actorTeacherId:
+          type: ["integer", "null"]
+        occurredAt:
+          type: string
+          format: date-time
+      required: [id, eventType, note, lifecycleState, actorTeacherId, occurredAt]
+
+    StudentDataRequestControl:
+      type: object
+      properties:
+        id: { type: integer }
+        requestId:
+          type: ["integer", "null"]
+        accountableOwnerTeacherId:
+          type: ["integer", "null"]
+        affectedStudentSessionId:
+          type: ["integer", "null"]
+        affectedClassId:
+          type: ["integer", "null"]
+        affectedDataCategories:
+          type: array
+          items: { type: string }
+        kind:
+          type: string
+          enum: [restriction, legal_hold, safeguarding_hold]
+        reasonCategory:
+          type: string
+          enum: [accuracy_dispute, objection, legal_claim, complaint, investigation, safeguarding, retention_duty, other]
+        reasonSummary: { type: string }
+        accessLimits:
+          type: array
+          items: { type: string }
+        processingLimits:
+          type: array
+          items: { type: string }
+        startDate: { type: string, format: date-time }
+        reviewDate: { type: string, format: date-time }
+        expiryDate:
+          type: ["string", "null"]
+          format: date-time
+        lifecycleState:
+          type: string
+          enum: [active, expired, lifted]
+        lastReviewedAt:
+          type: ["string", "null"]
+          format: date-time
+        endedAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudentDataRequestControlEvent"
+      required: [id, requestId, accountableOwnerTeacherId, affectedStudentSessionId, affectedClassId, affectedDataCategories, kind, reasonCategory, reasonSummary, accessLimits, processingLimits, startDate, reviewDate, expiryDate, lifecycleState, lastReviewedAt, endedAt, createdAt, updatedAt, events]
+
+    StudentDataRequestControlList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudentDataRequestControl"
+      required: [items]
+
+    StudentDataRequestExport:
+      type: object
+      description: A single student's export. It excludes PIN hashes, session nonces, other students, and class-wide configuration.
+      properties:
+        exportVersion:
+          type: string
+        generatedAt:
+          type: string
+          format: date-time
+        request:
+          type: object
+          additionalProperties: true
+        student:
+          type: object
+          additionalProperties: true
+        learning:
+          type: object
+          additionalProperties: true
+        activity:
+          type: object
+          additionalProperties: true
+        feedback:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        aiConversations:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        teacherMessages:
+          type: array
+          description: Plain-text messages sent by teachers for this student Climb
+          items:
+            $ref: "#/components/schemas/TeacherMessage"
+        includedCategories:
+          type: array
+          items:
+            type: string
+          description: Data categories included in this export
+        excluded:
+          type: array
+          items:
+            type: string
+      required: [exportVersion, generatedAt, request, student, learning, activity, feedback, aiConversations, teacherMessages, includedCategories, excluded]
+
+    SessionStatus:
+      type: object
+      properties:
+        idleExpiresAt:
+          type: string
+          format: date-time
+        absoluteExpiresAt:
+          type: string
+          format: date-time
+      required:
+        - idleExpiresAt
+        - absoluteExpiresAt
+
     TeacherProfile:
       type: object
       properties:
@@ -646,8 +3348,13 @@ components:
           type: string
         isItAdmin:
           type: boolean
+        schoolAdminRole:
+          type: ["string", "null"]
+          enum: [master, subadmin, null]
         organisationId:
           type: ["integer", "null"]
+        emailVerified:
+          type: boolean
         createdAt:
           type: string
           format: date-time
@@ -656,7 +3363,569 @@ components:
         - email
         - name
         - isItAdmin
+        - emailVerified
         - createdAt
+
+    TeacherSessionRestoreInput:
+      type: object
+      properties:
+        sessionResumeToken:
+          type: string
+          minLength: 40
+          maxLength: 200
+      required: [sessionResumeToken]
+
+    TeacherSessionRestoreResponse:
+      allOf:
+        - $ref: "#/components/schemas/TeacherProfile"
+        - type: object
+          properties:
+            mustChangePassword:
+              type: boolean
+            totpEnabled:
+              type: boolean
+          required: [mustChangePassword, totpEnabled]
+
+    TeacherDirectoryItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        isItAdmin:
+          type: boolean
+        schoolAdminRole:
+          type: ["string", "null"]
+          enum: [master, subadmin, null]
+        accountStatus:
+          type: string
+          enum: [active, suspended, deleted]
+        accountStatusChangedAt:
+          type: ["string", "null"]
+          format: date-time
+        approvalStatus:
+          type: string
+          enum: [pending, approved, rejected]
+        approvalReviewedAt:
+          type: ["string", "null"]
+          format: date-time
+        approvalReviewedBy:
+          type: ["integer", "null"]
+        approvalReason:
+          type: ["string", "null"]
+        totpEnabled:
+          type: boolean
+        mustChangePassword:
+          type: boolean
+        failedLoginAttempts:
+          type: integer
+        lockedUntil:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - email
+        - name
+        - isItAdmin
+        - accountStatus
+        - accountStatusChangedAt
+        - approvalStatus
+        - approvalReviewedAt
+        - approvalReviewedBy
+        - approvalReason
+        - totpEnabled
+        - mustChangePassword
+        - failedLoginAttempts
+        - lockedUntil
+        - createdAt
+
+    TeacherApprovalDecision:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        approvalStatus:
+          type: string
+          enum: [approved, rejected]
+      required: [ok, approvalStatus]
+
+    TeacherApprovalRejection:
+      type: object
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+      required: [reason]
+
+    TeacherDirectoryResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherDirectoryItem"
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        totalPages:
+          type: integer
+          minimum: 1
+      required:
+        - items
+        - total
+        - page
+        - pageSize
+        - totalPages
+
+    TeacherDepartureClass:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        subject:
+          type: ["string", "null"]
+        archivedAt:
+          type: ["string", "null"]
+          format: date-time
+      required: [id, name, subject, archivedAt]
+
+    TeacherDepartureTeacher:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        accountStatus:
+          type: string
+          enum: [active, suspended, deleted]
+      required: [id, name, email, accountStatus]
+
+    TeacherDepartureSummary:
+      type: object
+      properties:
+        teacher:
+          $ref: "#/components/schemas/TeacherDepartureTeacher"
+        classes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherDepartureClass"
+        studentCount:
+          type: integer
+          minimum: 0
+      required: [teacher, classes, studentCount]
+
+    TeacherDepartureInput:
+      oneOf:
+        - type: object
+          properties:
+            actions:
+              type: array
+              maxItems: 100
+              items:
+                $ref: "#/components/schemas/TeacherDepartureClassAction"
+            confirmation:
+              type: string
+              const: REMOVE ACCESS
+          required: [actions, confirmation]
+        - type: object
+          properties:
+            outcome:
+              type: string
+              const: transfer
+            transfers:
+              type: array
+              maxItems: 100
+              items:
+                $ref: "#/components/schemas/TeacherDepartureTransfer"
+            replacementTeacherId:
+              type: integer
+              minimum: 1
+            confirmation:
+              type: string
+              const: REMOVE ACCESS
+          required: [outcome, confirmation]
+        - type: object
+          properties:
+            outcome:
+              type: string
+              const: archive
+            retentionUntil:
+              type: string
+              pattern: '^\d{4}-\d{2}-\d{2}$'
+            reason:
+              type: string
+              minLength: 3
+              maxLength: 500
+            confirmation:
+              type: string
+              const: REMOVE ACCESS
+          required: [outcome, retentionUntil, reason, confirmation]
+
+    TeacherDepartureClassAction:
+      oneOf:
+        - type: object
+          properties:
+            action:
+              type: string
+              const: transfer
+            classId:
+              type: integer
+              minimum: 1
+            replacementTeacherId:
+              type: integer
+              minimum: 1
+          required: [action, classId, replacementTeacherId]
+        - type: object
+          properties:
+            action:
+              type: string
+              const: archive
+            classId:
+              type: integer
+              minimum: 1
+            reason:
+              type: string
+              minLength: 3
+              maxLength: 500
+          required: [action, classId]
+
+    TeacherDepartureTransfer:
+      type: object
+      properties:
+        classId:
+          type: integer
+          minimum: 1
+        replacementTeacherId:
+          type: integer
+          minimum: 1
+      required: [classId, replacementTeacherId]
+
+    TeacherDepartureResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        kind:
+          type: string
+          enum: [transferred, archived]
+        classCount:
+          type: integer
+          minimum: 0
+        archivedClassIds:
+          type: array
+          items:
+            type: integer
+        transferredClassIds:
+          type: array
+          items:
+            type: integer
+        retentionDays:
+          type: integer
+          minimum: 1
+        retentionUntil:
+          type: ["string", "null"]
+          format: date-time
+      required: [ok, kind, classCount, archivedClassIds, transferredClassIds]
+
+    OrganisationClassTransferInput:
+      type: object
+      properties:
+        replacementTeacherId:
+          type: integer
+          minimum: 1
+        confirmation:
+          type: string
+          const: TRANSFER CLASS
+      required: [replacementTeacherId, confirmation]
+
+    OrganisationClassTransferResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        kind:
+          type: string
+          const: transferred
+        classId:
+          type: integer
+        replacementTeacherId:
+          type: integer
+        replacementName:
+          type: string
+      required: [ok, kind, classId, replacementTeacherId, replacementName]
+
+    ArchivedTeacherClassActionInput:
+      oneOf:
+        - type: object
+          properties:
+            action:
+              type: string
+              const: restore
+            teacherId:
+              type: integer
+              minimum: 1
+          required: [action, teacherId]
+        - type: object
+          properties:
+            action:
+              type: string
+              const: schedule-deletion
+            confirmation:
+              type: string
+              const: DELETE
+          required: [action, confirmation]
+
+    ArchivedTeacherClassActionResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        kind:
+          type: string
+          enum: [restored, scheduled]
+        classId:
+          type: integer
+        replacementTeacherId:
+          type: integer
+        archiveRemoved:
+          type: boolean
+        deletionScheduledFor:
+          type: string
+          format: date-time
+      required: [ok, kind, classId]
+
+    TeacherRestoreResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        restored:
+          type: boolean
+        accountStatus:
+          type: string
+          const: active
+        accountStatusChangedAt:
+          type: string
+          format: date-time
+        archiveRemoved:
+          type: boolean
+      required: [ok, restored, accountStatus, accountStatusChangedAt, archiveRemoved]
+
+    TeacherRecordArchive:
+      type: object
+      properties:
+        id:
+          type: integer
+        teacherId:
+          type: integer
+        teacherName:
+          type: string
+        teacherEmail:
+          type: string
+          format: email
+        accountStatus:
+          type: string
+          enum: [active, suspended, deleted]
+        accountStatusChangedAt:
+          type: ["string", "null"]
+          format: date-time
+        reason:
+          type: string
+        accountRecoveryUntil:
+          type: ["string", "null"]
+          format: date-time
+        retentionUntil:
+          type: string
+          format: date-time
+        archivedAt:
+          type: string
+          format: date-time
+        classCount:
+          type: integer
+          minimum: 0
+        classNames:
+          type: array
+          items:
+            type: string
+      required: [id, teacherId, teacherName, teacherEmail, accountStatus, accountStatusChangedAt, reason, accountRecoveryUntil, retentionUntil, archivedAt, classCount, classNames]
+
+    TeacherRecordArchiveList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherRecordArchive"
+      required: [items]
+
+    TeacherRecordArchiveStudent:
+      type: object
+      properties:
+        id:
+          type: integer
+        studentName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lockedAt:
+          type: ["string", "null"]
+          format: date-time
+        lockedBy:
+          type: ["integer", "null"]
+        isFinalised:
+          type: boolean
+        archivedAt:
+          type: ["string", "null"]
+          format: date-time
+        retentionUntil:
+          type: ["string", "null"]
+          format: date-time
+        latestStage:
+          type: ["string", "null"]
+        completedStages:
+          type: array
+          items:
+            type: string
+        stageStatuses:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [none, started, finished]
+      required: [id, studentName, createdAt, lockedAt, lockedBy, latestStage, completedStages, stageStatuses]
+
+    TeacherRecordArchiveStudentReference:
+      type: object
+      properties:
+        id:
+          type: integer
+        label:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, label, createdAt]
+
+    TeacherRecordArchiveClass:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        subject:
+          type: ["string", "null"]
+        archivedAt:
+          type: ["string", "null"]
+          format: date-time
+        studentRecordCount:
+          type: integer
+          minimum: 0
+        stageEntryCount:
+          type: integer
+          minimum: 0
+        chatMessageCount:
+          type: integer
+          minimum: 0
+        students:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherRecordArchiveStudentReference"
+      required: [id, name, subject, archivedAt, studentRecordCount, stageEntryCount, chatMessageCount, students]
+
+    TeacherRecordArchiveDetail:
+      allOf:
+        - $ref: "#/components/schemas/TeacherRecordArchive"
+        - type: object
+          properties:
+            classes:
+              type: array
+              items:
+                $ref: "#/components/schemas/TeacherRecordArchiveClass"
+          required: [classes]
+
+    TeacherRecordArchiveStudentDetail:
+      type: object
+      properties:
+        session:
+          allOf:
+            - $ref: "#/components/schemas/TeacherRecordArchiveStudent"
+            - type: object
+              properties:
+                classId:
+                  type: integer
+              required: [classId]
+        stageEntries:
+          type: array
+          items:
+            $ref: "#/components/schemas/StageEntryRecord"
+        chatMessages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+      required: [session, stageEntries, chatMessages]
+
+    ArchivedRecordAccessRequest:
+      type: object
+      properties:
+        purpose:
+          type: string
+          minLength: 10
+          maxLength: 500
+        confirmation:
+          type: boolean
+          const: true
+      required: [purpose, confirmation]
+
+    TeacherRecordArchiveExport:
+      type: object
+      properties:
+        exportedAt:
+          type: string
+          format: date-time
+        archive:
+          type: object
+          additionalProperties: true
+        classes:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      required: [exportedAt, archive, classes]
+
+    TeacherRecordArchivePermanentDeleteInput:
+      type: object
+      properties:
+        confirmation:
+          type: string
+          const: PERMANENTLY DELETE
+      required: [confirmation]
+
+    TeacherRecordArchivePermanentDeleteResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        permanentlyDeleted:
+          type: boolean
+      required: [ok, permanentlyDeleted]
 
     TeacherRegistration:
       type: object
@@ -674,8 +3943,38 @@ components:
           type: string
       required:
         - email
+        - inviteCode
         - password
         - name
+
+    TeacherRegistrationPendingResponse:
+      type: object
+      properties:
+        totpSetupRequired: { type: boolean }
+        approvalPending: { type: boolean }
+        message: { type: string }
+        secret: { type: string }
+        qrCode: { type: string }
+        setupToken: { type: string }
+        warning: { type: string }
+      required: [totpSetupRequired, approvalPending, message, secret, qrCode, setupToken]
+
+    TeacherEmailVerificationInput:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+      required: [email]
+
+    TeacherEmailVerificationResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        emailVerified:
+          type: boolean
+      required: [ok, emailVerified]
 
     OrgAiSettings:
       type: object
@@ -688,8 +3987,294 @@ components:
           type: ["string", "null"]
         azureEndpoint:
           type: ["string", "null"]
+        dataProcessingAcknowledged:
+          type: boolean
+        dataProcessingAcknowledgedAt:
+          type: ["string", "null"]
+          format: date-time
+        dataProcessingApproverRecorded:
+          type: boolean
+        dataProcessingPolicyVersion:
+          type: ["string", "null"]
+        dataProcessingEvidenceReference:
+          type: ["string", "null"]
+        dataProcessingRegion:
+          type: ["string", "null"]
+        dataRetentionNoTrainingConfirmed:
+          type: boolean
+        schoolPoliciesConfirmed:
+          type: boolean
+          description: Legacy evidence field accepted for older clients; not required for AI access.
+        dataProcessingReviewDate:
+          type: ["string", "null"]
+          format: date-time
+        researchProcessingBlocked:
+          type: boolean
       required:
         - configured
+
+    RetentionPolicy:
+      type: object
+      properties:
+        id:
+          type: integer
+        dataCategory:
+          type: string
+        label:
+          type: string
+        retentionDays:
+          type: integer
+        reviewDate:
+          type: string
+          format: date-time
+        deletionStatus:
+          type: string
+          enum: [retained, scheduled, under_review]
+        notes:
+          type: ["string", "null"]
+        legalHold:
+          type: boolean
+        operatorVerifiedAt:
+          type: ["string", "null"]
+          format: date-time
+        executionStatus:
+          type: string
+          enum: [ready, blocked]
+        blockReason:
+          type: ["string", "null"]
+          enum: [policy_not_scheduled, legal_hold, missing_operator_verification, null]
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, dataCategory, label, retentionDays, reviewDate, deletionStatus, legalHold, operatorVerifiedAt, executionStatus, blockReason, updatedAt]
+
+    SchoolDataRequestApproval:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [dpo, safeguarding_lead, school_master, it_owner, controller_legal_reviewer]
+        approverName:
+          type: string
+          minLength: 2
+          maxLength: 200
+        evidenceReference:
+          type: string
+          minLength: 3
+          maxLength: 500
+        approvedOn:
+          type: string
+          format: date
+      required: [role, approverName, evidenceReference, approvedOn]
+
+    SchoolDataRequestDpoReview:
+      type: object
+      properties:
+        reviewerName: { type: string, minLength: 2, maxLength: 200 }
+        outcome:
+          type: string
+          enum: [approved, approved_with_actions, not_approved]
+        evidenceReference: { type: string, minLength: 1, maxLength: 200 }
+        reviewDate: { type: string, format: date }
+        actionsRequired: { type: string, maxLength: 1000 }
+      required: [reviewerName, outcome, evidenceReference, reviewDate]
+
+    SchoolDataRequestFinalApproval:
+      type: object
+      properties:
+        approverName: { type: string, minLength: 2, maxLength: 200 }
+        approverRole: { type: string, minLength: 2, maxLength: 200 }
+        decision:
+          type: string
+          enum: [approved, approved_with_conditions, not_approved]
+        evidenceReference: { type: string, minLength: 1, maxLength: 200 }
+        approvalDate: { type: string, format: date }
+        nextReviewDate: { type: string, format: date }
+      required: [approverName, approverRole, decision, evidenceReference, approvalDate, nextReviewDate]
+
+    SchoolDataRequestConsultation:
+      type: object
+      properties:
+        name: { type: string, minLength: 2, maxLength: 200 }
+        evidenceReference: { type: string, minLength: 1, maxLength: 200 }
+        consultedOn: { type: string, format: date }
+      required: [name, evidenceReference, consultedOn]
+
+    SchoolDataRequestOptionalConsultations:
+      type: object
+      properties:
+        safeguardingLead:
+          anyOf:
+            - $ref: "#/components/schemas/SchoolDataRequestConsultation"
+            - type: "null"
+        itSecurityLead:
+          anyOf:
+            - $ref: "#/components/schemas/SchoolDataRequestConsultation"
+            - type: "null"
+        legalAdvice:
+          anyOf:
+            - $ref: "#/components/schemas/SchoolDataRequestConsultation"
+            - type: "null"
+
+    SchoolDataRequestProcedureInput:
+      type: object
+      properties:
+        privacyContact: { type: string, minLength: 3, maxLength: 2000 }
+        secureTransferRoute: { type: string, minLength: 3, maxLength: 2000 }
+        safeguardingContact: { type: string, minLength: 3, maxLength: 2000 }
+        incidentEscalationContact: { type: string, minLength: 3, maxLength: 2000 }
+        complaintRoute: { type: string, minLength: 3, maxLength: 2000 }
+        responseTargets: { type: string, minLength: 3, maxLength: 2000 }
+        retentionSchedule: { type: string, minLength: 3, maxLength: 2000 }
+        staffPublicationLocation: { type: string, minLength: 3, maxLength: 2000 }
+        privacyMaterialsLink: { type: string, minLength: 3, maxLength: 2000 }
+        procedureVersion: { type: string, minLength: 1, maxLength: 100 }
+        publicationConfirmed:
+          type: boolean
+          const: true
+        dpoReview:
+          $ref: "#/components/schemas/SchoolDataRequestDpoReview"
+        finalSchoolApproval:
+          $ref: "#/components/schemas/SchoolDataRequestFinalApproval"
+        optionalConsultations:
+          $ref: "#/components/schemas/SchoolDataRequestOptionalConsultations"
+      required: [privacyContact, secureTransferRoute, safeguardingContact, incidentEscalationContact, complaintRoute, responseTargets, retentionSchedule, staffPublicationLocation, privacyMaterialsLink, procedureVersion, publicationConfirmed, dpoReview, finalSchoolApproval, optionalConsultations]
+
+    SchoolDataRequestProcedure:
+      allOf:
+        - $ref: "#/components/schemas/SchoolDataRequestProcedureInput"
+        - type: object
+          properties:
+            id: { type: integer }
+            organisationId: { type: integer }
+            nextReviewDate: { type: string, format: date }
+            approvals:
+              type: array
+              items:
+                $ref: "#/components/schemas/SchoolDataRequestApproval"
+            status:
+              type: string
+              const: published
+            procedureStatus:
+              type: string
+              enum: [Draft, Awaiting DPO review, Actions required, Awaiting school approval, Approved, Review overdue]
+            approvedAt: { type: string, format: date-time }
+            publishedAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+          required: [id, organisationId, nextReviewDate, approvals, status, procedureStatus, approvedAt, publishedAt, updatedAt]
+
+    SchoolDataRequestProcedureResponse:
+      type: object
+      properties:
+        procedure:
+          anyOf:
+            - $ref: "#/components/schemas/SchoolDataRequestProcedure"
+            - type: "null"
+      required: [procedure]
+
+    RetentionPolicySchedule:
+      type: object
+      properties:
+        defaultPolicy:
+          anyOf:
+            - $ref: "#/components/schemas/RetentionPolicy"
+            - type: "null"
+        exceptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetentionPolicy"
+      required: [defaultPolicy, exceptions]
+
+    UpdateRetentionPolicyInput:
+      type: object
+      properties:
+        retentionDays:
+          type: integer
+          minimum: 1
+          maximum: 36500
+        reviewDate:
+          type: string
+          format: date
+        deletionStatus:
+          type: string
+          enum: [retained, scheduled, under_review]
+        notes:
+          type: ["string", "null"]
+          maxLength: 1000
+        legalHold:
+          type: boolean
+      required: [retentionDays, reviewDate, deletionStatus]
+
+    ResearchGovernance:
+      type: object
+      properties:
+        researchProcessingBlocked:
+          type: boolean
+        researchGovernanceReference:
+          type: ["string", "null"]
+        researchGovernanceReviewDate:
+          type: ["string", "null"]
+          format: date-time
+        status:
+          type: string
+          enum: [blocked, configured]
+        requirements:
+          type: array
+          items:
+            type: string
+      required: [researchProcessingBlocked, status, requirements]
+
+    ComplianceEvidenceReport:
+      type: object
+      description: Redacted organisation-level evidence report. It excludes credentials, pupil content, IP addresses, and other free-text evidence.
+      properties:
+        reportVersion:
+          type: string
+        generatedAt:
+          type: string
+          format: date-time
+        scope:
+          type: string
+        organisation:
+          type: object
+          additionalProperties: false
+          properties:
+            id: { type: integer }
+            name: { type: string }
+            teacherCount: { type: integer }
+            classCount: { type: integer }
+          required: [id, name, teacherCount, classCount]
+        aiProcessing:
+          type: object
+          additionalProperties: true
+        researchProcessing:
+          type: object
+          additionalProperties: true
+        retentionPolicies:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        dataInventory:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        securityControls:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        approvalAndRetentionHistory:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        externalVerificationRequired:
+          type: array
+          items:
+            type: string
+      required: [reportVersion, generatedAt, scope, organisation, aiProcessing, researchProcessing, retentionPolicies, dataInventory, securityControls, approvalAndRetentionHistory, externalVerificationRequired]
 
     UpdateOrgAiSettingsInput:
       type: object
@@ -702,9 +4287,32 @@ components:
           minLength: 1
         azureEndpoint:
           type: string
+        dataProcessingAcknowledged:
+          type: boolean
+        dataProcessingPolicyVersion:
+          type: string
+        dataProcessingEvidenceReference:
+          type: string
+        dataProcessingRegion:
+          type: string
+          enum: [UK]
+        dataProcessingRegionConfirmed:
+          type: boolean
+        dataRetentionNoTrainingConfirmed:
+          type: boolean
+        schoolPoliciesConfirmed:
+          type: boolean
+          description: Legacy field accepted for older clients; not required for AI access.
+        dataProcessingReviewDate:
+          type: string
+          format: date
       required:
         - aiProvider
         - aiKey
+        - dataProcessingAcknowledged
+        - dataProcessingRegion
+        - dataProcessingRegionConfirmed
+        - dataRetentionNoTrainingConfirmed
 
     TeacherCredentials:
       type: object
@@ -734,12 +4342,125 @@ components:
         createdAt:
           type: string
           format: date-time
+        archivedAt:
+          type: ["string", "null"]
+          format: date-time
       required:
         - id
         - teacherId
         - name
         - code
         - createdAt
+        - archivedAt
+
+    TeacherArchivedClass:
+      allOf:
+        - $ref: "#/components/schemas/ClassRecord"
+        - type: object
+          properties:
+            archiveExpiresAt:
+              type: ["string", "null"]
+              format: date-time
+            archiveLifecycleStatus:
+              type: string
+            archiveExpiryWarningSentAt:
+              type: ["string", "null"]
+              format: date-time
+            studentCount:
+              type: integer
+              minimum: 0
+          required:
+            - archiveExpiresAt
+            - archiveLifecycleStatus
+            - archiveExpiryWarningSentAt
+            - studentCount
+
+    TeacherArchivedStudentRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        studentName:
+          type: string
+        classId:
+          type: integer
+        className:
+          type: string
+        archivedAt:
+          type: string
+          format: date-time
+      required: [id, studentName, classId, className, archivedAt]
+
+    TeacherArchiveScheduledDeletion:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        subject:
+          type: ["string", "null"]
+        teacherId:
+          type: integer
+        teacherName:
+          type: string
+        deletionScheduledFor:
+          type: string
+          format: date-time
+        deletionReason:
+          type: ["string", "null"]
+        studentCount:
+          type: integer
+          minimum: 0
+        canRestoreAsSchoolMaster:
+          type: boolean
+      required: [id, name, subject, teacherId, teacherName, deletionScheduledFor, deletionReason, studentCount, canRestoreAsSchoolMaster]
+
+    TeacherArchiveScheduledStudentRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        studentName:
+          type: string
+        classId:
+          type: integer
+        className:
+          type: string
+        teacherId:
+          type: integer
+        teacherName:
+          type: string
+        deletionScheduledFor:
+          type: string
+          format: date-time
+        canRestoreAsSchoolMaster:
+          type: boolean
+      required: [id, studentName, classId, className, teacherId, teacherName, deletionScheduledFor, canRestoreAsSchoolMaster]
+
+    TeacherArchiveResponse:
+      type: object
+      properties:
+        warningWindowDays:
+          type: integer
+          minimum: 1
+        archivedClasses:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherArchivedClass"
+        archivedStudentRecords:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherArchivedStudentRecord"
+        scheduledDeletions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherArchiveScheduledDeletion"
+        scheduledStudentRecords:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherArchiveScheduledStudentRecord"
+      required: [warningWindowDays, archivedClasses, archivedStudentRecords, scheduledDeletions, scheduledStudentRecords]
 
     ClassDetail:
       type: object
@@ -750,6 +4471,8 @@ components:
           type: integer
         name:
           type: string
+        subject:
+          type: ["string", "null"]
         code:
           type: string
         createdAt:
@@ -757,12 +4480,17 @@ components:
           format: date-time
         studentCount:
           type: integer
+        archivedAt:
+          type: ["string", "null"]
+          format: date-time
       required:
         - id
         - teacherId
         - name
+        - subject
         - code
         - createdAt
+        - archivedAt
         - studentCount
 
     ClassInput:
@@ -776,6 +4504,19 @@ components:
       required:
         - name
 
+    ClassUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        subject:
+          type: string
+          maxLength: 200
+      required:
+        - name
+
     StudentSummary:
       type: object
       properties:
@@ -785,8 +4526,25 @@ components:
           type: integer
         studentName:
           type: string
+        registrationStatus:
+          type: string
+          enum: [pending, approved, rejected]
+        registrationReviewedAt:
+          type: ["string", "null"]
+          format: date-time
         createdAt:
           type: string
+          format: date-time
+        lockedAt:
+          type: ["string", "null"]
+          format: date-time
+        lockedBy:
+          type: ["integer", "null"]
+        archivedAt:
+          type: ["string", "null"]
+          format: date-time
+        retentionUntil:
+          type: ["string", "null"]
           format: date-time
         latestStage:
           type: ["string", "null"]
@@ -800,14 +4558,46 @@ components:
           additionalProperties:
             type: string
           description: Per-stage status - "none", "started", or "finished"
+        stageCompletionWarnings:
+          type: object
+          additionalProperties:
+            type: boolean
+          description: Per-stage indication that the student marked the stage complete with required responses missing
+        formativeFeedbackActionedStages:
+          type: array
+          items:
+            type: string
+            enum: [MAP, TORCH, RESEARCH, COMPASS, EMBED]
+          description: Stages where visible formative feedback was marked as actioned by this student
+        needsAttention:
+          type: boolean
+          description: Whether this approved student is included in the dashboard's teaching-attention count
+        attentionReason:
+          type: ["string", "null"]
+          description: Why this student is included in teaching attention
+        unreadStudentMessageCount:
+          type: integer
+          minimum: 0
       required:
         - id
         - classId
         - studentName
+        - registrationStatus
+        - registrationReviewedAt
         - createdAt
+        - lockedAt
+        - lockedBy
+        - isFinalised
+        - archivedAt
+        - retentionUntil
         - latestStage
         - completedStages
         - stageStatuses
+        - stageCompletionWarnings
+        - formativeFeedbackActionedStages
+        - needsAttention
+        - attentionReason
+        - unreadStudentMessageCount
 
     StudentSessionInfo:
       type: object
@@ -818,17 +4608,177 @@ components:
           type: integer
         studentName:
           type: string
+        registrationStatus:
+          type: string
+          enum: [pending, approved, rejected]
         className:
           type: string
         createdAt:
           type: string
           format: date-time
+        lockedAt:
+          type: ["string", "null"]
+          format: date-time
+        isFinalised:
+          type: boolean
+        archivedAt:
+          type: ["string", "null"]
+          format: date-time
       required:
         - id
         - classId
         - studentName
+        - registrationStatus
         - className
         - createdAt
+        - isFinalised
+
+    TeacherMessage:
+      type: object
+      properties:
+        id: { type: integer }
+        teacherId: { type: ["integer", "null"] }
+        senderType:
+          type: string
+          enum: [teacher, student]
+        content:
+          type: string
+          minLength: 1
+          maxLength: 500
+        createdAt:
+          type: string
+          format: date-time
+        teacherReadAt:
+          type: ["string", "null"]
+          format: date-time
+        studentReadAt:
+          type: ["string", "null"]
+          format: date-time
+      required: [id, teacherId, senderType, content, createdAt, teacherReadAt, studentReadAt]
+
+    SendTeacherMessageInput:
+      type: object
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 500
+      required: [content]
+
+    StudentTeacherMessagesResponse:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherMessage"
+        unreadCount:
+          type: integer
+      required: [messages, unreadCount]
+
+    TeacherStudentMessagesResponse:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherMessage"
+        unreadCount:
+          type: integer
+      required: [messages, unreadCount]
+
+    AssessmentLockResult:
+      type: object
+      properties:
+        lockedAt:
+          type: string
+          format: date-time
+      required: [lockedAt]
+
+    StudentActivityEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        startedAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: ["string", "null"]
+          format: date-time
+        durationSeconds:
+          type: integer
+          minimum: 0
+        pageDurations:
+          type: array
+          description: Active seconds attributed to each Climb page; omitted for legacy records without page data.
+          items:
+            $ref: "#/components/schemas/StudentActivityPageDuration"
+      required: [id, startedAt, lastSeenAt, endedAt, durationSeconds]
+
+    StudentActivityPageDuration:
+      type: object
+      properties:
+        stage:
+          type: string
+          enum: [MAP, TORCH, RESEARCH, COMPASS, EMBED]
+        durationSeconds:
+          type: integer
+          minimum: 0
+      required: [stage, durationSeconds]
+
+    StudentActivitySummary:
+      type: object
+      properties:
+        totalSessions:
+          type: integer
+          minimum: 0
+        totalSeconds:
+          type: integer
+          minimum: 0
+        averageSeconds:
+          type: integer
+          minimum: 0
+          description: Average duration of an activity period. Retained for activity-period compatibility.
+        loginSessionsAvailable:
+          type: boolean
+        loginSessionCount:
+          type: ["integer", "null"]
+          minimum: 0
+        averageLoginSessionSeconds:
+          type: ["integer", "null"]
+          minimum: 0
+        longestLoginSessionSeconds:
+          type: ["integer", "null"]
+          minimum: 0
+        pageDurations:
+          type: array
+          description: Total active seconds attributed to each Climb page across all activity periods.
+          items:
+            $ref: "#/components/schemas/StudentActivityPageDuration"
+      required: [totalSessions, totalSeconds, averageSeconds, loginSessionsAvailable, loginSessionCount, averageLoginSessionSeconds, longestLoginSessionSeconds, pageDurations]
+
+    StudentActivityLog:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudentActivityEntry"
+        summary:
+          $ref: "#/components/schemas/StudentActivitySummary"
+      required: [entries, summary]
+
+    StudentActivityHeartbeatInput:
+      type: object
+      properties:
+        stage:
+          type: string
+          enum: [MAP, TORCH, RESEARCH, COMPASS, EMBED]
+      required: [stage]
 
     CheckStudentJoinInput:
       type: object
@@ -850,9 +4800,23 @@ components:
           type: boolean
         hasPinSet:
           type: boolean
+        registrationStatus:
+          type: ["string", "null"]
+          enum: [pending, approved, rejected, null]
       required:
         - exists
         - hasPinSet
+        - registrationStatus
+
+    StudentRegistrationResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        registrationStatus:
+          type: string
+          enum: [pending, approved, rejected]
+      required: [ok, registrationStatus]
 
     StudentJoinInput:
       type: object
@@ -865,8 +4829,9 @@ components:
           minLength: 1
         pin:
           type: string
-          minLength: 4
-          maxLength: 4
+          minLength: 6
+          maxLength: 6
+          pattern: '^\d{6}$'
       required:
         - studentName
         - classCode
@@ -933,10 +4898,30 @@ components:
         message:
           type: string
           minLength: 1
+          maxLength: 4000
         bloomLevel:
           type: string
+          maxLength: 32
+        torchSuggestion:
+          type: object
+          properties:
+            goal:
+              type: string
+              minLength: 1
+              maxLength: 120
+            question:
+              type: string
+              minLength: 1
+              maxLength: 500
+            questionId:
+              type: string
+              maxLength: 180
+            edited:
+              type: boolean
+          required: [goal, question]
         history:
           type: array
+          maxItems: 12
           items:
             $ref: "#/components/schemas/ChatHistoryItem"
       required:
@@ -947,8 +4932,11 @@ components:
       properties:
         role:
           type: string
+          enum: [user, assistant]
         content:
           type: string
+          minLength: 1
+          maxLength: 4000
       required:
         - role
         - content
@@ -977,10 +4965,34 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ChatMessage"
+        answerFeedbackAttempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnswerFeedbackAttempt"
+        developmentAnalysis:
+          type: object
+          additionalProperties: true
       required:
         - session
         - stageEntries
         - chatMessages
+        - answerFeedbackAttempts
+
+    AnswerFeedbackAttempt:
+      type: object
+      properties:
+        answerSnapshot:
+          type: string
+        feedback:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - answerSnapshot
+        - feedback
+        - createdAt
 
     TaskRecord:
       type: object
@@ -991,16 +5003,46 @@ components:
           type: integer
         title:
           type: string
+        subject:
+          type: ["string", "null"]
+          maxLength: 200
+        examBoard:
+          type: ["string", "null"]
+          maxLength: 200
         question:
           type: string
         notes:
           type: ["string", "null"]
+        learningFramework:
+          type: string
+          enum: [bloom, knowledge_dimensions]
+        yearGroup:
+          type: ["string", "null"]
+          maxLength: 32
         bloomLevels:
+          type: array
+          items:
+            type: string
+        knowledgeDimensions:
           type: array
           items:
             type: string
         dueDate:
           type: ["string", "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        formativeAssessmentDate:
+          type: ["string", "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        summativeAssessmentDate:
+          type: ["string", "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        lateEditingAllowed:
+          type: boolean
+        deadlineClosed:
+          type: boolean
+        deadlineClosesAt:
+          type: ["string", "null"]
+          format: date-time
         successCriteria:
           type: array
           items:
@@ -1042,6 +5084,9 @@ components:
         - title
         - question
         - bloomLevels
+        - lateEditingAllowed
+        - deadlineClosed
+        - deadlineClosesAt
 
     TaskInput:
       type: object
@@ -1049,17 +5094,40 @@ components:
         title:
           type: string
           minLength: 1
+        subject:
+          type: ["string", "null"]
+          maxLength: 200
+        examBoard:
+          type: ["string", "null"]
+          maxLength: 200
         question:
           type: string
           minLength: 1
+        learningFramework:
+          type: string
+          enum: [bloom, knowledge_dimensions]
+        yearGroup:
+          type: string
+          maxLength: 32
         notes:
           type: string
         bloomLevels:
           type: array
           items:
             type: string
+        knowledgeDimensions:
+          type: array
+          items:
+            type: string
         dueDate:
-          type: string
+          type: ["string", "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        formativeAssessmentDate:
+          type: ["string", "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        summativeAssessmentDate:
+          type: ["string", "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}$'
         successCriteria:
           type: array
           items:
@@ -1084,7 +5152,7 @@ components:
             embed:
               type: string
         expectedLength:
-          type: string
+          type: ["string", "null"]
         resources:
           type: array
           items:
@@ -1092,3 +5160,482 @@ components:
       required:
         - title
         - question
+
+    TaskSuggestionInput:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 200
+        examBoard:
+          type: ["string", "null"]
+          maxLength: 200
+        learningFramework:
+          type: string
+          enum: [bloom, knowledge_dimensions]
+        yearGroup:
+          type: string
+          minLength: 1
+          maxLength: 32
+          enum: [Year 9, Year 10, Year 11, Year 12, Year 13]
+        question:
+          type: string
+          maxLength: 2000
+        bloomLevels:
+          type: array
+          maxItems: 6
+          items:
+            type: string
+            enum: [Remember, Understand, Apply, Analyse, Evaluate, Create]
+        knowledgeDimensions:
+          type: array
+          maxItems: 3
+          items:
+            type: string
+            enum: [Factual Knowledge, Conceptual Knowledge, Procedural Knowledge]
+      required: [title, subject, learningFramework, yearGroup]
+
+    TaskSuggestion:
+      type: object
+      properties:
+        title:
+          type: string
+        subject:
+          type: string
+        examBoard:
+          type: ["string", "null"]
+          maxLength: 200
+        learningFramework:
+          type: string
+          enum: [bloom, knowledge_dimensions]
+        yearGroup:
+          type: string
+        question:
+          type: string
+        notes:
+          type: string
+        bloomLevels:
+          type: array
+          items:
+            type: string
+        knowledgeDimensions:
+          type: array
+          items:
+            type: string
+        successCriteria:
+          type: array
+          items:
+            type: string
+        keyVocabulary:
+          type: array
+          items:
+            type: string
+        expectedLength:
+          type: string
+        stageInstructions:
+          type: object
+          additionalProperties:
+            type: string
+        enabledStages:
+          type: array
+          items:
+            type: string
+        resourceSuggestions:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [Web link, Book, Video, Document, Other]
+              label:
+                type: string
+                maxLength: 300
+              url:
+                type: string
+                format: uri
+                maxLength: 1000
+              publisher:
+                type: string
+                maxLength: 160
+              sourceCategory:
+                type: string
+                enum: [official_exam_board, reputable_education]
+              retrievedAt:
+                type: string
+                pattern: '^\d{4}-\d{2}-\d{2}T'
+              verificationStatus:
+                type: string
+                enum: [retrieved_not_verified]
+              reason:
+                type: string
+                maxLength: 300
+            required: [type, label, url, publisher, sourceCategory, retrievedAt, verificationStatus, reason]
+        researchStatus:
+          type: string
+          enum: [complete, no_approved_sources, unavailable]
+        researchNotice:
+          type: string
+          maxLength: 500
+      required: [title, subject, examBoard, learningFramework, yearGroup, question, notes, bloomLevels, knowledgeDimensions, successCriteria, keyVocabulary, expectedLength, stageInstructions, enabledStages, resourceSuggestions, researchStatus, researchNotice]
+
+    TaskTemplateRecord:
+      allOf:
+        - $ref: "#/components/schemas/TaskTemplateInput"
+        - type: object
+          properties:
+            id:
+              type: integer
+            teacherId:
+              type: integer
+            organisationId:
+              type: ["integer", "null"]
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+          required:
+            - id
+            - teacherId
+            - organisationId
+            - createdAt
+            - updatedAt
+
+    TaskTemplateInput:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+        subject:
+          type: ["string", "null"]
+          maxLength: 200
+        examBoard:
+          type: ["string", "null"]
+          maxLength: 200
+        question:
+          type: string
+        learningFramework:
+          type: string
+          enum: [bloom, knowledge_dimensions]
+        yearGroup:
+          type: ["string", "null"]
+          maxLength: 32
+        notes:
+          type: ["string", "null"]
+        bloomLevels:
+          type: array
+          items:
+            type: string
+        knowledgeDimensions:
+          type: array
+          items:
+            type: string
+        dueDate:
+          type: ["string", "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        successCriteria:
+          type: array
+          items:
+            type: string
+        keyVocabulary:
+          type: array
+          items:
+            type: string
+        enabledStages:
+          type: array
+          items:
+            type: string
+        stageInstructions:
+          type: object
+          properties:
+            map:
+              type: string
+            torch:
+              type: string
+            compass:
+              type: string
+            embed:
+              type: string
+        expectedLength:
+          type: ["string", "null"]
+        resources:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [draft, ready]
+          default: draft
+      required:
+        - title
+        - question
+        - status
+
+    ApplyTaskTemplateInput:
+      type: object
+      properties:
+        classIds:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: integer
+      required:
+        - classIds
+
+    TaskTemplateApplyResult:
+      type: object
+      properties:
+        appliedClassIds:
+          type: array
+          items:
+            type: integer
+      required:
+        - appliedClassIds
+
+    TeacherDashboardOverview:
+      type: object
+      properties:
+        totalClasses:
+          type: integer
+        totalStudents:
+          type: integer
+        pendingApprovals:
+          type: integer
+        completedStudents:
+          type: integer
+        inProgressStudents:
+          type: integer
+        readyForFormativeClasses:
+          type: integer
+        readyForSummativeClasses:
+          type: integer
+        notStartedStudents:
+          type: integer
+        readyToAssessStudents:
+          type: integer
+        nearlyCompleteStudents:
+          type: integer
+        needsNudgeStudents:
+          type: integer
+        activeThisWeekStudents:
+          type: integer
+        dueSoonTasks:
+          type: integer
+        attentionDetails:
+          type: object
+          properties:
+            readyToAssess:
+              type: array
+              items:
+                $ref: "#/components/schemas/TeacherDashboardAttentionDetail"
+            readyForFormative:
+              type: array
+              items:
+                $ref: "#/components/schemas/TeacherDashboardAttentionDetail"
+            readyForSummative:
+              type: array
+              items:
+                $ref: "#/components/schemas/TeacherDashboardAttentionDetail"
+            notStarted:
+              type: array
+              items:
+                $ref: "#/components/schemas/TeacherDashboardAttentionDetail"
+            nearlyComplete:
+              type: array
+              items:
+                $ref: "#/components/schemas/TeacherDashboardAttentionDetail"
+            teachingAttention:
+              type: array
+              items:
+                $ref: "#/components/schemas/TeacherDashboardAttentionDetail"
+            activeThisWeek:
+              type: array
+              items:
+                $ref: "#/components/schemas/TeacherDashboardAttentionDetail"
+            dueSoon:
+              type: array
+              items:
+                $ref: "#/components/schemas/TeacherDashboardAttentionDetail"
+          required:
+            - readyToAssess
+            - readyForFormative
+            - readyForSummative
+            - notStarted
+            - nearlyComplete
+            - teachingAttention
+            - activeThisWeek
+            - dueSoon
+        classes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeacherDashboardClass"
+      required:
+        - totalClasses
+        - totalStudents
+        - pendingApprovals
+        - completedStudents
+        - inProgressStudents
+        - readyForFormativeClasses
+        - readyForSummativeClasses
+        - notStartedStudents
+        - readyToAssessStudents
+        - nearlyCompleteStudents
+        - needsNudgeStudents
+        - activeThisWeekStudents
+        - dueSoonTasks
+        - attentionDetails
+        - classes
+
+    TeacherDashboardAttentionDetail:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [ready_to_assess, ready_for_formative, ready_for_summative, not_started, nearly_complete, teaching_attention, active_this_week, due_soon]
+        sessionId:
+          type: ["integer", "null"]
+        classId:
+          type: integer
+        className:
+          type: string
+        studentName:
+          type: ["string", "null"]
+        taskTitle:
+          type: ["string", "null"]
+        reason:
+          type: string
+        stage:
+          type: ["string", "null"]
+        lastActivityAt:
+          type: ["string", "null"]
+          format: date-time
+        completionDate:
+          type: ["string", "null"]
+          format: date-time
+        dueDate:
+          type: ["string", "null"]
+          format: date
+        missingFeedback:
+          type: boolean
+      required:
+        - kind
+        - sessionId
+        - classId
+        - className
+        - studentName
+        - taskTitle
+        - reason
+        - stage
+        - lastActivityAt
+        - completionDate
+        - dueDate
+        - missingFeedback
+
+    TeacherDashboardClass:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        subject:
+          type: ["string", "null"]
+        code:
+          type: string
+        taskTitle:
+          type: ["string", "null"]
+        dueDate:
+          type: ["string", "null"]
+          format: date
+        formativeAssessmentDate:
+          type: ["string", "null"]
+          format: date
+        summativeAssessmentDate:
+          type: ["string", "null"]
+          format: date
+        enrolledCount:
+          type: integer
+        pendingApprovals:
+          type: integer
+        completedCount:
+          type: integer
+        inProgressCount:
+          type: integer
+        notStartedCount:
+          type: integer
+        readyToAssessCount:
+          type: integer
+        nearlyCompleteCount:
+          type: integer
+        needsNudgeCount:
+          type: integer
+        activeThisWeekCount:
+          type: integer
+        progressPercent:
+          type: integer
+        nextAction:
+          type: string
+        latestActivityAt:
+          type: ["string", "null"]
+          format: date-time
+      required:
+        - id
+        - name
+        - subject
+        - code
+        - taskTitle
+        - dueDate
+        - formativeAssessmentDate
+        - summativeAssessmentDate
+        - enrolledCount
+        - pendingApprovals
+        - completedCount
+        - inProgressCount
+        - notStartedCount
+        - readyToAssessCount
+        - nearlyCompleteCount
+        - needsNudgeCount
+        - activeThisWeekCount
+        - progressPercent
+        - nextAction
+        - latestActivityAt
+
+    BulkReviewStudentsInput:
+      type: object
+      properties:
+        sessionIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: integer
+        decision:
+          type: string
+          enum: [approve, reject]
+      required:
+        - sessionIds
+        - decision
+
+    BulkReviewStudentsResponse:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum: [approve, reject]
+        updatedSessionIds:
+          type: array
+          items:
+            type: integer
+      required:
+        - decision
+        - updatedSessionIds

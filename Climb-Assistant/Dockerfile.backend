@@ -36,6 +36,7 @@ FROM node:20-slim AS runtime
 WORKDIR /app
 
 # Install production-only dependencies that are externalized by esbuild
+# (must match the `external` array in artifacts/api-server/build.mjs)
 RUN npm install --no-save \
   pg@8 \
   connect-pg-simple@10 \
@@ -45,14 +46,28 @@ RUN npm install --no-save \
   @google/genai@2 \
   openai@6 \
   @aws-sdk/client-secrets-manager@3 \
-  @aws-sdk/client-bedrock-runtime@3
+  @aws-sdk/client-bedrock-runtime@3 \
+  pdfkit@0.20
 
 # Copy the bundled output from builder
 COPY --from=builder /app/artifacts/api-server/dist ./dist
 
+# Copy the db workspace package needed to run migrations at container startup.
+# The compiled server bundle (dist/index.mjs) is launched directly by CMD below,
+# bypassing npm/pnpm lifecycle hooks entirely - so artifacts/api-server's
+# "prestart" script (which runs migrations) never fires on its own. The
+# docker-entrypoint.sh below runs migrations explicitly before starting the
+# server, so this only needs to happen once here rather than relying on a
+# lifecycle hook that this CMD never triggers.
+COPY lib/db/migrations ./lib/db/migrations
+COPY lib/db/scripts ./lib/db/scripts
+
 # Create non-root user for security (Debian syntax)
 RUN groupadd -g 1001 appgroup && \
     useradd -u 1001 -g appgroup -s /bin/bash -m appuser
+
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh && chown appuser:appgroup /app/docker-entrypoint.sh
 
 USER appuser
 
@@ -66,4 +81,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD node -e "require('http').get('http://localhost:8080/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["node", "--enable-source-maps", "dist/index.mjs"]

@@ -12,6 +12,8 @@ export default function ResetPassword() {
   const [loading, setLoading] = useState(false);
   const [token, setToken] = useState("");
   const [expired, setExpired] = useState(false);
+  const [hibpWarning, setHibpWarning] = useState<string | null>(null);
+  const [acceptHibpWarning, setAcceptHibpWarning] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(search);
@@ -31,14 +33,24 @@ export default function ResetPassword() {
     }
     setLoading(true);
     try {
-      await apiFetch("/auth/reset-password", {
+      const result = await apiFetch("/auth/reset-password", {
         method: "POST",
-        body: JSON.stringify({ token, newPassword }),
+        body: JSON.stringify({ token, newPassword, acceptHibpWarning }),
       });
-      toast({ title: "Password reset", description: "You can now sign in with your new password." });
+      toast({
+        title: "Password reset",
+        description: result?.warning
+          ? "Password reset. The breach check was unavailable, so choose a different password if you are unsure this one is unique."
+          : "You can now sign in with your new password.",
+      });
       setLocation("/teacher/login");
     } catch (err: any) {
-      if (err.message && err.message.toLowerCase().includes("expired")) {
+      if (err.code === "HIBP_UNAVAILABLE") {
+        setHibpWarning(err.warning ?? err.message);
+        setAcceptHibpWarning(false);
+        return;
+      }
+      if (err.message && err.message.toLowerCase().includes("has expired")) {
         setExpired(true);
       } else {
         toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -87,34 +99,57 @@ export default function ResetPassword() {
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium mb-2">New password</label>
+            <label htmlFor="reset-password-new" className="block text-sm font-medium mb-2">New password</label>
             <input
+              id="reset-password-new"
               required
               type="password"
+              autoComplete="new-password"
               value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              minLength={8}
+              onChange={(e) => {
+                setNewPassword(e.target.value);
+                setHibpWarning(null);
+                setAcceptHibpWarning(false);
+              }}
+              minLength={12}
               disabled={!token}
               className="w-full rounded-2xl border border-neutral-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-black/10 disabled:opacity-50"
-              placeholder="At least 8 characters"
+              placeholder="At least 12 characters"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-2">Confirm new password</label>
+            <label htmlFor="reset-password-confirm" className="block text-sm font-medium mb-2">Confirm new password</label>
             <input
+              id="reset-password-confirm"
               required
               type="password"
+              autoComplete="new-password"
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
-              minLength={8}
+              minLength={12}
               disabled={!token}
               className="w-full rounded-2xl border border-neutral-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-black/10 disabled:opacity-50"
               placeholder="Same password again"
             />
           </div>
+          {hibpWarning && (
+            <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p className="font-medium">Breach check temporarily unavailable</p>
+              <p className="mt-1">{hibpWarning}</p>
+              <label className="mt-3 flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={acceptHibpWarning}
+                  onChange={(e) => setAcceptHibpWarning(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>I understand and want to continue with this password.</span>
+              </label>
+            </div>
+          )}
           <button
             type="submit"
-            disabled={loading || !token}
+            disabled={loading || !token || Boolean(hibpWarning && !acceptHibpWarning)}
             className="w-full rounded-2xl bg-black text-white px-6 py-4 text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
           >
             {loading ? "Resetting…" : "Reset Password"}

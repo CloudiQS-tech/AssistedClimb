@@ -1,6 +1,23 @@
 import { useState, useEffect } from "react";
 import { apiFetch } from "@/lib/api";
 
+function siteGateErrorMessage(error: unknown): string {
+  const status = error && typeof error === "object" && "status" in error
+    ? Number((error as { status?: unknown }).status)
+    : 0;
+
+  if (status === 429) {
+    return "Too many attempts. Please wait 15 minutes before trying again.";
+  }
+  if (status === 400) {
+    return "Please enter a valid site password.";
+  }
+  if (status >= 500 || status === 0) {
+    return "The site is temporarily unavailable. Please try again.";
+  }
+  return "Incorrect password. Please try again.";
+}
+
 export default function SiteGate({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<"loading" | "open" | "locked">("loading");
   const [password, setPassword] = useState("");
@@ -8,7 +25,6 @@ export default function SiteGate({ children }: { children: React.ReactNode }) {
   const [submitting, setSubmitting] = useState(false);
 
   const isAdminRoute = window.location.pathname.replace(/\/$/, "").endsWith("/admin");
-
   useEffect(() => {
     if (isAdminRoute) { setStatus("open"); return; }
     apiFetch("/auth/site-status")
@@ -27,8 +43,8 @@ export default function SiteGate({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({ password }),
       });
       setStatus("open");
-    } catch {
-      setError("Incorrect password. Please try again.");
+    } catch (error) {
+      setError(siteGateErrorMessage(error));
     } finally {
       setSubmitting(false);
     }
@@ -53,8 +69,11 @@ export default function SiteGate({ children }: { children: React.ReactNode }) {
               <p className="text-sm text-neutral-500">Enter the site password to continue.</p>
             </div>
             <form onSubmit={handleSubmit} className="space-y-4">
+              <label htmlFor="site-gate-password" className="sr-only">Site password</label>
               <input
+                id="site-gate-password"
                 type="password"
+                autoComplete="current-password"
                 autoFocus
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}

@@ -19,6 +19,7 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 const basePath = process.env.BASE_PATH;
+const apiProxyTarget = process.env.API_PROXY_TARGET?.trim();
 
 if (!basePath) {
   throw new Error(
@@ -40,9 +41,6 @@ export default defineConfig({
               root: path.resolve(import.meta.dirname, ".."),
             }),
           ),
-          await import("@replit/vite-plugin-dev-banner").then((m) =>
-            m.devBanner(),
-          ),
         ]
       : []),
   ],
@@ -63,6 +61,14 @@ export default defineConfig({
     strictPort: true,
     host: "0.0.0.0",
     allowedHosts: true,
+    proxy: apiProxyTarget
+      ? {
+          "/api": {
+            target: apiProxyTarget,
+            changeOrigin: false,
+          },
+        }
+      : undefined,
     fs: {
       strict: true,
     },

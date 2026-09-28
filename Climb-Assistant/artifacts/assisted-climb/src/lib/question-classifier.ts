@@ -50,6 +50,41 @@ export const QUESTION_TYPE_META: Record<
 
 export const QUESTION_TYPES = Object.keys(QUESTION_TYPE_META) as QuestionType[];
 
+export type KnowledgeDimensionType =
+  | "Factual Knowledge"
+  | "Conceptual Knowledge"
+  | "Procedural Knowledge"
+  | "Learning Process"
+  | "Other";
+
+export const KNOWLEDGE_DIMENSION_META: Record<
+  KnowledgeDimensionType,
+  { color: string; description: string }
+> = {
+  "Factual Knowledge": {
+    color: "bg-blue-500",
+    description: "Recalling or checking facts, terms, definitions, and details",
+  },
+  "Conceptual Knowledge": {
+    color: "bg-emerald-500",
+    description: "Understanding ideas, principles, categories, and relationships",
+  },
+  "Procedural Knowledge": {
+    color: "bg-amber-500",
+    description: "Choosing or practising a method, skill, technique, or sequence",
+  },
+  "Learning Process": {
+    color: "bg-violet-500",
+    description: "Monitoring understanding, uncertainty, strategy, or next steps",
+  },
+  Other: {
+    color: "bg-slate-400",
+    description: "Messages that do not provide a clear dimension signal",
+  },
+};
+
+export const KNOWLEDGE_DIMENSION_TYPES = Object.keys(KNOWLEDGE_DIMENSION_META) as KnowledgeDimensionType[];
+
 export function classifyQuestion(text: string): QuestionType {
   const t = text.toLowerCase().trim();
 
@@ -133,6 +168,55 @@ export function classifyQuestion(text: string): QuestionType {
     /^name (the|some|a)/.test(t)
   ) {
     return "Factual";
+  }
+
+  return "Other";
+}
+
+/**
+ * A lightweight report-only classifier for Knowledge Dimensions tasks.
+ * "Learning Process" is deliberately a separate signal rather than a
+ * selectable knowledge dimension: it captures metacognitive reflection.
+ */
+export function classifyKnowledgeDimension(text: string): KnowledgeDimensionType {
+  const t = text.toLowerCase().trim();
+
+  if (
+    /i (don'?t|do not) (understand|know how|get)/.test(t) ||
+    /i'?m (confused|not sure|struggling|lost|stuck)/.test(t) ||
+    /what am i missing|what should i do next|what next/.test(t) ||
+    /how (can|could|should) i (improve|check my thinking|know if|reflect|monitor)/.test(t) ||
+    /how confident|where am i least confident|what remains unclear/.test(t)
+  ) {
+    return "Learning Process";
+  }
+
+  if (
+    /what steps|which steps|step[- ]by[- ]step|method|process|procedure|technique|skill/.test(t) ||
+    /how (do|can|should|would) i (use|apply|investigate|structure|plan|write|practise|practice|research)/.test(t) ||
+    /how can i (find|check|organise|organize)/.test(t)
+  ) {
+    return "Procedural Knowledge";
+  }
+
+  if (
+    /^what (is|are|was|were) /.test(t) ||
+    /^who (is|was|were|are) /.test(t) ||
+    /^when (did|was|were|is|are) /.test(t) ||
+    /^where (is|was|were|did) /.test(t) ||
+    /^define |^what does .{0,40} mean|^what('?s| is) the definition/.test(t) ||
+    /key facts|key terms|specific detail/.test(t)
+  ) {
+    return "Factual Knowledge";
+  }
+
+  if (
+    /^why /.test(t) ||
+    /^how (does|do|did) /.test(t) ||
+    /explain (how|why|what|the)/.test(t) ||
+    /concept|principle|model|category|relationship|connection|compare|contrast|cause|effect|factor|pattern/.test(t)
+  ) {
+    return "Conceptual Knowledge";
   }
 
   return "Other";

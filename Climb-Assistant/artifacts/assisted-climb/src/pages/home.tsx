@@ -124,7 +124,7 @@ export default function Home() {
               COMPASS
             </a>
             <a href="#embed" className="hover:text-black transition-colors" data-testid="link-embed">
-              Final Response
+              Final Answer
             </a>
           </nav>
 
@@ -513,7 +513,7 @@ export default function Home() {
           <div className="border-b border-neutral-200 px-8 py-6 flex items-center justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-violet-500 mb-2">
-                Final Response
+                Final Answer
               </p>
 
               <h3 className="text-3xl font-semibold tracking-tight">

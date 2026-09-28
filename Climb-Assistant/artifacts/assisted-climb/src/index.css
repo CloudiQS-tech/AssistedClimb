@@ -208,6 +208,27 @@
 }
 
 @layer utilities {
+  .final-answer-editor .ql-container {
+    min-height: 340px;
+    border-radius: 1rem;
+    border: 1px solid hsl(var(--border));
+    font-family: inherit;
+    font-size: 0.875rem;
+  }
+
+  .final-answer-editor .ql-editor {
+    min-height: 340px;
+    padding: 1.25rem;
+    line-height: 1.625;
+  }
+
+  .final-answer-editor .ql-editor.ql-blank::before {
+    left: 1.25rem;
+    right: 1.25rem;
+    color: hsl(var(--muted-foreground));
+    font-style: normal;
+  }
+
   input[type="search"]::-webkit-search-cancel-button {
     @apply hidden;
   }

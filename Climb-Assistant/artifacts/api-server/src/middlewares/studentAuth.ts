@@ -1,18 +1,52 @@
 import type { Request, Response, NextFunction } from "express";
-import { db, studentSessionsTable, classesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import {
+  db,
+  studentSessionsTable,
+  studentActivitySessionsTable,
+  classesTable,
+  organisationsTable,
+  teachersTable,
+} from "@workspace/db";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { regenerateAnonymousSessionPreservingSiteAccess } from "../lib/session-cookie";
+
+export const STUDENT_RECOVERY_ERROR_CODE = "STUDENT_RECOVERY_PERIOD";
+
+function isBestEffortActivityPause(req: Request): boolean {
+  return req.method === "POST" && req.path.endsWith("/student/activity/pause");
+}
+
+async function closeStudentActivity(req: Request, endReason: string): Promise<void> {
+  const activityId = req.session.studentActivityId;
+  const studentSessionId = req.session.studentSessionId;
+  if (!activityId || !studentSessionId) return;
+  try {
+    await db
+      .update(studentActivitySessionsTable)
+      .set({
+        // A displaced browser must never gain time between its last activity
+        // heartbeat and the request that discovers the displacement.
+        endedAt: sql`${studentActivitySessionsTable.lastSeenAt}`,
+        endReason,
+      })
+      .where(
+        and(
+          eq(studentActivitySessionsTable.id, activityId),
+          eq(studentActivitySessionsTable.studentSessionId, studentSessionId),
+          isNull(studentActivitySessionsTable.endedAt),
+        ),
+      );
+  } catch {
+    // An activity record must not prevent the session-security response.
+  }
+}
 
 export async function requireStudentSession(
   req: Request,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  // Accept session ID from cookie-based session OR from the X-Student-Session-Id
-  // header (used by the frontend when cookies are blocked in cross-origin iframes).
-  const cookieSessionId = req.session.studentSessionId;
-  const headerSessionId = req.headers["x-student-session-id"];
-  const studentSessionId = cookieSessionId ??
-    (typeof headerSessionId === "string" && headerSessionId ? Number(headerSessionId) : undefined);
+  const studentSessionId = req.session.studentSessionId;
 
   if (!studentSessionId) {
     res.status(401).json({ error: "No active student session" });
@@ -25,27 +59,81 @@ export async function requireStudentSession(
       classId: studentSessionsTable.classId,
       studentName: studentSessionsTable.studentName,
       sessionNonce: studentSessionsTable.sessionNonce,
+      isBlocked: studentSessionsTable.isBlocked,
+      registrationStatus: studentSessionsTable.registrationStatus,
+      lockedAt: studentSessionsTable.lockedAt,
+      archivedAt: studentSessionsTable.archivedAt,
+      retentionUntil: studentSessionsTable.retentionUntil,
+      deletionScheduledFor: studentSessionsTable.deletionScheduledFor,
       createdAt: studentSessionsTable.createdAt,
       className: classesTable.name,
+      classArchivedAt: classesTable.archivedAt,
+      classDeletionScheduledFor: classesTable.deletionScheduledFor,
+      organisationActive: organisationsTable.active,
     })
     .from(studentSessionsTable)
     .innerJoin(classesTable, eq(studentSessionsTable.classId, classesTable.id))
-    .where(eq(studentSessionsTable.id, studentSessionId));
+    .innerJoin(teachersTable, eq(classesTable.teacherId, teachersTable.id))
+    .innerJoin(organisationsTable, eq(teachersTable.organisationId, organisationsTable.id))
+    .where(and(
+      eq(studentSessionsTable.id, studentSessionId),
+      isNull(organisationsTable.deletedAt),
+    ));
 
   if (!session) {
+    await closeStudentActivity(req, "account_missing");
     req.session.destroy(() => {});
     res.status(401).json({ error: "No active student session" });
     return;
   }
 
-  // Single-session enforcement: if the DB has a nonce, the client must present
-  // the matching one. A mismatch means someone else joined with the same PIN.
+  if (session.isBlocked) {
+    await closeStudentActivity(req, "blocked");
+    req.session.destroy(() => {});
+    res.status(403).json({ error: "Your access to this class has been removed. Please speak to your teacher." });
+    return;
+  }
+
+  if (session.registrationStatus !== "approved") {
+    await closeStudentActivity(req, `registration_${session.registrationStatus}`);
+    req.session.destroy(() => {});
+    res.status(403).json({
+      error: session.registrationStatus === "pending"
+        ? "Your registration is waiting for your teacher's approval."
+        : "Your registration was not approved. Please speak to your teacher.",
+    });
+    return;
+  }
+
+  if (session.deletionScheduledFor || session.classDeletionScheduledFor) {
+    await closeStudentActivity(req, "deletion_requested");
+    // Browsers abort the unload-time pause request before accepting a rotated
+    // cookie. Keep that request denied, then rotate on the next normal request
+    // so the student reaches the join screen without retaining authentication.
+    if (!isBestEffortActivityPause(req)) {
+      await regenerateAnonymousSessionPreservingSiteAccess(req);
+    }
+    res.status(403).json({
+      error: "This record is scheduled for deletion and is no longer available. Please speak to your teacher or School Admin during the recovery period.",
+      code: STUDENT_RECOVERY_ERROR_CODE,
+    });
+    return;
+  }
+
+  if (!session.organisationActive) {
+    await closeStudentActivity(req, "organisation_suspended");
+    req.session.destroy(() => {});
+    res.status(403).json({ error: "This school is currently suspended. Please contact your teacher or school administrator." });
+    return;
+  }
+
+  // Single-session enforcement: the session nonce must match the authenticated
+  // browser session. A mismatch means someone else joined with the same PIN.
   if (session.sessionNonce) {
-    const cookieNonce = req.session.studentNonce;
-    const headerNonce = req.headers["x-student-nonce"];
-    const clientNonce = cookieNonce ?? (typeof headerNonce === "string" ? headerNonce : undefined);
+    const clientNonce = req.session.studentNonce;
 
     if (clientNonce !== session.sessionNonce) {
+      await closeStudentActivity(req, "replaced");
       req.session.destroy(() => {});
       res.status(401).json({
         error: "Your session is no longer active — someone may have joined using your name and PIN. Please rejoin and let your teacher know.",

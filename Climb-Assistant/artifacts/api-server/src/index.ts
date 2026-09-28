@@ -1,5 +1,8 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { startOrganisationDeletionPurge } from "./lib/organisation-deletion";
+import { startRecoverableDeletionPurge } from "./lib/recoverable-deletion";
+import { startArchiveRetentionLifecycle } from "./lib/archive-retention";
 
 const rawPort = process.env["PORT"];
 
@@ -22,4 +25,7 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+  startOrganisationDeletionPurge();
+  startRecoverableDeletionPurge();
+  startArchiveRetentionLifecycle();
 });

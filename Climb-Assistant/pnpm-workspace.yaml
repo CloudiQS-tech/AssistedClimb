@@ -61,10 +61,10 @@ catalog:
   react-dom: 19.1.0
   tailwind-merge: ^3.3.1
   tailwindcss: ^4.1.14
-  tsx: ^4.21.0
+  tsx: ^4.23.12
   vite: ^7.3.5
   wouter: ^3.3.5
-  zod: ^3.25.76
+  zod: ^4.1.0
 
 autoInstallPeers: false
 
@@ -156,8 +156,11 @@ overrides:
   "@expo/ngrok-bin>@expo/ngrok-bin-win32-ia32": "-"
   "@expo/ngrok-bin>@expo/ngrok-bin-win32-x64": "-"
   # drizzle-kit uses esbuild internally on an older version that's vulnerable, this overrides it
-  "@esbuild-kit/esm-loader": "npm:tsx@^4.21.0"
+  "@esbuild-kit/esm-loader": "npm:tsx@^4.23.12"
   esbuild: "0.28.1"
+  "@esbuild-kit/core-utils>esbuild": "0.25.0"
+  "@orval/core>esbuild": "0.28.1"
+  "tsx>esbuild": "0.28.1"
   # Security: force patched versions of vulnerable transitive dependencies
   linkify-it: ">=5.0.2"
   fast-uri: ">=3.1.4"

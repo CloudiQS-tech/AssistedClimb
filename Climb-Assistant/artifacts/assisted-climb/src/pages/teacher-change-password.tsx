@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, clearTeacherToken } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
 export default function TeacherChangePassword() {
@@ -9,6 +9,8 @@ export default function TeacherChangePassword() {
   const [newPassword, setNewPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(false);
+  const [hibpWarning, setHibpWarning] = useState<string | null>(null);
+  const [acceptHibpWarning, setAcceptHibpWarning] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -18,13 +20,24 @@ export default function TeacherChangePassword() {
     }
     setLoading(true);
     try {
-      await apiFetch("/auth/change-password", {
+      const result = await apiFetch("/auth/change-password", {
         method: "POST",
-        body: JSON.stringify({ newPassword }),
+        body: JSON.stringify({ newPassword, acceptHibpWarning }),
       });
-      toast({ title: "Password updated", description: "You can now use your new password to sign in." });
-      setLocation("/teacher/dashboard");
+      clearTeacherToken();
+      toast({
+        title: "Password updated",
+        description: result?.warning
+          ? "Password updated. The breach check was unavailable, so choose a different password if you are unsure this one is unique."
+          : "For your security, sign in again with your new password.",
+      });
+      setLocation("/teacher/login");
     } catch (err: any) {
+      if (err.code === "HIBP_UNAVAILABLE") {
+        setHibpWarning(err.warning ?? err.message);
+        setAcceptHibpWarning(false);
+        return;
+      }
       toast({ title: "Error", description: err.message, variant: "destructive" });
     } finally {
       setLoading(false);
@@ -48,32 +61,55 @@ export default function TeacherChangePassword() {
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium mb-2">New password</label>
+            <label htmlFor="teacher-change-password-new" className="block text-sm font-medium mb-2">New password</label>
             <input
+              id="teacher-change-password-new"
               required
               type="password"
+              autoComplete="new-password"
               value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              minLength={8}
+              onChange={(e) => {
+                setNewPassword(e.target.value);
+                setHibpWarning(null);
+                setAcceptHibpWarning(false);
+              }}
+              minLength={12}
               className="w-full rounded-2xl border border-neutral-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-black/10"
-              placeholder="At least 8 characters"
+              placeholder="At least 12 characters"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-2">Confirm new password</label>
+            <label htmlFor="teacher-change-password-confirm" className="block text-sm font-medium mb-2">Confirm new password</label>
             <input
+              id="teacher-change-password-confirm"
               required
               type="password"
+              autoComplete="new-password"
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
-              minLength={8}
+              minLength={12}
               className="w-full rounded-2xl border border-neutral-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-black/10"
               placeholder="Same password again"
             />
           </div>
+          {hibpWarning && (
+            <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p className="font-medium">Breach check temporarily unavailable</p>
+              <p className="mt-1">{hibpWarning}</p>
+              <label className="mt-3 flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={acceptHibpWarning}
+                  onChange={(e) => setAcceptHibpWarning(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>I understand and want to continue with this password.</span>
+              </label>
+            </div>
+          )}
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || Boolean(hibpWarning && !acceptHibpWarning)}
             className="w-full rounded-2xl bg-black text-white px-6 py-4 text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
           >
             {loading ? "Saving…" : "Set Password & Continue"}

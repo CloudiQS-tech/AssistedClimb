@@ -39,6 +39,7 @@ export default function Landing() {
           <span className="text-sm text-neutral-500">Manage your classes</span>
         </Link>
       </div>
+
     </div>
   );
 }
