@@ -13,13 +13,19 @@ async function buildAll() {
   const distDir = path.resolve(artifactDir, "dist");
 
   await esbuild({
-    // NOTE: the *-test-entry.ts build entries and the scripts/ directory referenced by
-    // the original update package are not present in this deployment. Dawn confirmed
-    // (2026-09-21) these are test/tooling entry points to be added as a fast-follow,
-    // not required for this production deploy. Re-add them here once scripts/ lands.
+    // *-test-entry.ts build entries and scripts/reconcile-restored-database.mjs added
+    // 2026-10-02 as the fast-follow Dawn confirmed on 2026-09-21 (see
+    // Climb-Assistant-AWS-fast-follow-2026-10-02/AWS-FAST-FOLLOW.md for provenance).
     entryPoints: {
       index: path.resolve(artifactDir, "src/index.ts"),
       "run-retention-enforcement": path.resolve(artifactDir, "src/run-retention-enforcement.ts"),
+      "archive-retention-test-entry": path.resolve(artifactDir, "scripts/archive-retention-test-entry.ts"),
+      "task-deadline-test-entry": path.resolve(artifactDir, "scripts/task-deadline-test-entry.ts"),
+      "task-research-admission-test-entry": path.resolve(artifactDir, "scripts/task-research-admission-test-entry.ts"),
+      "student-activity-page-timing-test-entry": path.resolve(artifactDir, "scripts/student-activity-page-timing-test-entry.ts"),
+      "student-join-rate-limit-test-entry": path.resolve(artifactDir, "scripts/student-join-rate-limit-test-entry.ts"),
+      "torch-tutoring-test-entry": path.resolve(artifactDir, "scripts/torch-tutoring-test-entry.ts"),
+      "development-analysis-test-entry": path.resolve(artifactDir, "scripts/development-analysis-test-entry.ts"),
     },
     platform: "node",
     bundle: true,
