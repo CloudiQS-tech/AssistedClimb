@@ -111,12 +111,10 @@ import
  from "../lib/preview-session"
 ;
 
-import 
-{
- SESSION_ABSOLUTE_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS 
-}
- from "../lib/session-policy"
-;
+import {
+  getSessionIdleTimeoutMs,
+  SESSION_ABSOLUTE_TIMEOUT_MS,
+} from "../lib/session-policy";
 import { requireTeacher } from "../middlewares/teacherAuth";
 
 
@@ -431,6 +429,7 @@ async function establishTeacherSession(req: Request, teacherId: number): Promise
   req.session.pendingTotpSetupTeacherId = undefined;
   req.session.sessionStartedAt = Date.now();
   req.session.lastActivityAt = req.session.sessionStartedAt;
+  req.session.cookie.maxAge = getSessionIdleTimeoutMs("teacher");
   await new Promise<void>((resolve, reject) => req.session.save((err) => (err ? reject(err) : resolve())));
 }
 
@@ -1550,7 +1549,7 @@ router.post("/auth/reset-password", authLimiter, async (req, res): Promise<void>
 
   const [consumedReset] = await db
     .update(teachersTable)
-    .set({ passwordHash, passwordResetToken: null, passwordResetExpiresAt: null, mustChangePassword: teacher.mustChangePassword, failedLoginAttempts: 0, lockedUntil: null })
+    .set({ passwordHash, passwordResetToken: null, passwordResetExpiresAt: null, mustChangePassword: false, failedLoginAttempts: 0, lockedUntil: null })
     .where(
       and(
         eq(teachersTable.id, teacher.id),
@@ -1626,9 +1625,14 @@ async function getSessionStatus(req: Request, res: Response): Promise<void> {
   }
   const startedAt = req.session.sessionStartedAt ?? Date.now();
   const lastActivityAt = req.session.lastActivityAt ?? startedAt;
+  const role = req.session.studentSessionId
+    ? "student"
+    : req.session.teacherId
+      ? "teacher"
+      : "admin";
   res.json({
     absoluteExpiresAt: new Date(startedAt + SESSION_ABSOLUTE_TIMEOUT_MS).toISOString(),
-    idleExpiresAt: new Date(lastActivityAt + SESSION_IDLE_TIMEOUT_MS).toISOString(),
+    idleExpiresAt: new Date(lastActivityAt + getSessionIdleTimeoutMs(role)).toISOString(),
   });
 }
 

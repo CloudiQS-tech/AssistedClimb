@@ -3,8 +3,10 @@ import { useLocation } from "wouter";
 import { apiFetch, clearStudentSession, clearTeacherToken } from "@/lib/api";
 import { flushBeforeLogout } from "@/lib/session-lifecycle";
 
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
-const WARNING_WINDOW_MS = 5 * 60 * 1000;
+const SCHOOL_IDLE_TIMEOUT_MS = 8 * 60 * 1000;
+const ADMIN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const SCHOOL_WARNING_WINDOW_MS = 3 * 60 * 1000;
+const ADMIN_WARNING_WINDOW_MS = 5 * 60 * 1000;
 const SERVER_ACTIVITY_INTERVAL_MS = 60 * 1000;
 const ACTIVITY_EVENTS = ["pointerdown", "keydown", "scroll", "touchstart"] as const;
 
@@ -12,7 +14,7 @@ type SessionRole = "student" | "teacher" | "admin";
 
 function roleForPath(path: string): SessionRole | null {
   if (/\/climb(?:\/|$)/.test(path)) return "student";
-  if (/\/teacher\/(dashboard|class|settings|change-password|student)/.test(path)) return "teacher";
+  if (/\/teacher(?:\/|$)/.test(path)) return "teacher";
   if (/\/admin(?:\/|$)/.test(path)) return "admin";
   return null;
 }
@@ -35,18 +37,22 @@ function mePath(role: SessionRole): string {
   return "/auth/me";
 }
 
-function getIdleTimeoutMs(): number {
-  if (!import.meta.env.DEV) return IDLE_TIMEOUT_MS;
+function getIdleTimeoutMs(role: SessionRole | null): number {
+  const maximumMs = role === "admin" ? ADMIN_IDLE_TIMEOUT_MS : SCHOOL_IDLE_TIMEOUT_MS;
+  if (!import.meta.env.DEV) return maximumMs;
   const raw = new URLSearchParams(window.location.search).get("sessionTimeoutMs");
   const value = raw ? Number(raw) : NaN;
-  return Number.isInteger(value) && value >= 10_000 && value <= IDLE_TIMEOUT_MS ? value : IDLE_TIMEOUT_MS;
+  return Number.isInteger(value) && value >= 10_000 && value <= maximumMs ? value : maximumMs;
 }
 
 export default function SessionTimeout() {
   const [location, setLocation] = useLocation();
   const role = useMemo(() => roleForPath(location), [location]);
-  const idleTimeoutMs = useMemo(getIdleTimeoutMs, [location]);
-  const warningWindowMs = Math.min(WARNING_WINDOW_MS, Math.floor(idleTimeoutMs / 2));
+  const idleTimeoutMs = useMemo(() => getIdleTimeoutMs(role), [location, role]);
+  const configuredWarningWindowMs = role === "admin"
+    ? ADMIN_WARNING_WINDOW_MS
+    : SCHOOL_WARNING_WINDOW_MS;
+  const warningWindowMs = Math.min(configuredWarningWindowMs, Math.floor(idleTimeoutMs / 2));
   const [authenticated, setAuthenticated] = useState(false);
   const [remainingMs, setRemainingMs] = useState(idleTimeoutMs);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -66,11 +72,15 @@ export default function SessionTimeout() {
     clearStudentSession();
     clearTeacherToken();
     if (reason === "timeout") {
-      sessionStorage.setItem("sessionTimeoutMessage", "You were signed out after 30 minutes of inactivity.");
+      const idleMinutes = Math.ceil(idleTimeoutMs / 60_000);
+      sessionStorage.setItem(
+        "sessionTimeoutMessage",
+        `You were signed out after ${idleMinutes} minutes of inactivity.`,
+      );
     }
     setAuthenticated(false);
     setLocation(loginPath(role));
-  }, [loggingOut, role, setLocation]);
+  }, [idleTimeoutMs, loggingOut, role, setLocation]);
 
   useEffect(() => {
     let cancelled = false;

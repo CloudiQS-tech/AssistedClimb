@@ -41,6 +41,7 @@ import type {
   ExportPlatformActivityLogReportParams,
   HealthStatus,
   ListOrganisationTeachersParams,
+  ListSafeguardingReviewItemsParams,
   ListStudentDataRequestStudentsParams,
   ListStudentTeacherMessagesParams,
   OrgAiSettings,
@@ -52,6 +53,11 @@ import type {
   RetentionPolicy,
   RetentionPolicySchedule,
   RunOrganisationRetentionPolicy200,
+  SafeguardingReviewItemDetailResponse,
+  SafeguardingReviewItemListResponse,
+  SafeguardingReviewItemUpdateInput,
+  SafeguardingReviewerPermissionInput,
+  SafeguardingReviewerPermissionResponse,
   SchoolDataRequestProcedure,
   SchoolDataRequestProcedureInput,
   SchoolDataRequestProcedureResponse,
@@ -935,6 +941,329 @@ export function useListOrganisationTeachers<TData = Awaited<ReturnType<typeof li
 
 
 
+
+export const getSetSafeguardingReviewerPermissionUrl = (id: number,) => {
+
+
+
+
+  return `/api/teacher/org/teacher/${id}/safeguarding-reviewer`
+}
+
+/**
+ * School Admin only. Assignment requires the school's exact authorization confirmation.
+ * @summary Assign or remove Safeguarding Reviewer permission
+ */
+export const setSafeguardingReviewerPermission = async (id: number,
+    safeguardingReviewerPermissionInput: SafeguardingReviewerPermissionInput, options?: Parameters<typeof customFetch>[1]): Promise<SafeguardingReviewerPermissionResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+return customFetch<SafeguardingReviewerPermissionResponse>(getSetSafeguardingReviewerPermissionUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(safeguardingReviewerPermissionInput)
+  }
+);}
+
+
+
+
+
+export const getSetSafeguardingReviewerPermissionMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setSafeguardingReviewerPermission>>, TError,SetSafeguardingReviewerPermissionMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof setSafeguardingReviewerPermission>>, TError,SetSafeguardingReviewerPermissionMutationVariables, TContext> => {
+
+const mutationKey = ['setSafeguardingReviewerPermission'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof setSafeguardingReviewerPermission>>, SetSafeguardingReviewerPermissionMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  setSafeguardingReviewerPermission(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SetSafeguardingReviewerPermissionMutationResult = NonNullable<Awaited<ReturnType<typeof setSafeguardingReviewerPermission>>>
+    export type SetSafeguardingReviewerPermissionMutationBody = BodyType<SafeguardingReviewerPermissionInput>
+    export type SetSafeguardingReviewerPermissionMutationError = ErrorType<ErrorResponse>
+    export type SetSafeguardingReviewerPermissionMutationVariables = {id: number;data: BodyType<SafeguardingReviewerPermissionInput>}
+
+    /**
+ * @summary Assign or remove Safeguarding Reviewer permission
+ */
+export const useSetSafeguardingReviewerPermission = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setSafeguardingReviewerPermission>>, TError,SetSafeguardingReviewerPermissionMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof setSafeguardingReviewerPermission>>,
+        TError,
+        SetSafeguardingReviewerPermissionMutationVariables,
+        TContext
+      > => {
+      return useMutation(getSetSafeguardingReviewerPermissionMutationOptions(options));
+    }
+
+export const getListSafeguardingReviewItemsUrl = (params?: ListSafeguardingReviewItemsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/teacher/safeguarding/items?${stringifiedParams}` : `/api/teacher/safeguarding/items`
+}
+
+/**
+ * Safeguarding Reviewer permission is required. Results are restricted to the reviewer's school.
+ * @summary List Safeguarding Review Items
+ */
+export const listSafeguardingReviewItems = async (params?: ListSafeguardingReviewItemsParams, options?: Parameters<typeof customFetch>[1]): Promise<SafeguardingReviewItemListResponse> => {
+
+  return customFetch<SafeguardingReviewItemListResponse>(getListSafeguardingReviewItemsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListSafeguardingReviewItemsQueryKey = (params?: ListSafeguardingReviewItemsParams,) => {
+    return [
+    `/api/teacher/safeguarding/items`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListSafeguardingReviewItemsQueryOptions = <TData = Awaited<ReturnType<typeof listSafeguardingReviewItems>>, TError = ErrorType<ErrorResponse>>(params?: ListSafeguardingReviewItemsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listSafeguardingReviewItems>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListSafeguardingReviewItemsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listSafeguardingReviewItems>>> = ({ signal }) => listSafeguardingReviewItems(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listSafeguardingReviewItems>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListSafeguardingReviewItemsQueryResult = NonNullable<Awaited<ReturnType<typeof listSafeguardingReviewItems>>>
+export type ListSafeguardingReviewItemsQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary List Safeguarding Review Items
+ */
+
+export function useListSafeguardingReviewItems<TData = Awaited<ReturnType<typeof listSafeguardingReviewItems>>, TError = ErrorType<ErrorResponse>>(
+ params?: ListSafeguardingReviewItemsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listSafeguardingReviewItems>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListSafeguardingReviewItemsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetSafeguardingReviewItemUrl = (id: number,) => {
+
+
+
+
+  return `/api/teacher/safeguarding/items/${id}`
+}
+
+/**
+ * Opening a review item is recorded in the restricted audit history.
+ * @summary Open a Safeguarding Review Item
+ */
+export const getSafeguardingReviewItem = async (id: number, options?: Parameters<typeof customFetch>[1]): Promise<SafeguardingReviewItemDetailResponse> => {
+
+  return customFetch<SafeguardingReviewItemDetailResponse>(getGetSafeguardingReviewItemUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetSafeguardingReviewItemQueryKey = (id: number,) => {
+    return [
+    `/api/teacher/safeguarding/items/${id}`
+    ] as const;
+    }
+
+
+export const getGetSafeguardingReviewItemQueryOptions = <TData = Awaited<ReturnType<typeof getSafeguardingReviewItem>>, TError = ErrorType<ErrorResponse>>(id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSafeguardingReviewItem>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetSafeguardingReviewItemQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSafeguardingReviewItem>>> = ({ signal }) => getSafeguardingReviewItem(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSafeguardingReviewItem>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetSafeguardingReviewItemQueryResult = NonNullable<Awaited<ReturnType<typeof getSafeguardingReviewItem>>>
+export type GetSafeguardingReviewItemQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary Open a Safeguarding Review Item
+ */
+
+export function useGetSafeguardingReviewItem<TData = Awaited<ReturnType<typeof getSafeguardingReviewItem>>, TError = ErrorType<ErrorResponse>>(
+ id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSafeguardingReviewItem>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetSafeguardingReviewItemQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getUpdateSafeguardingReviewItemUrl = (id: number,) => {
+
+
+
+
+  return `/api/teacher/safeguarding/items/${id}`
+}
+
+/**
+ * Updates are recorded in the restricted audit history. The system does not recommend a safeguarding decision.
+ * @summary Record human review of a Safeguarding Review Item
+ */
+export const updateSafeguardingReviewItem = async (id: number,
+    safeguardingReviewItemUpdateInput: SafeguardingReviewItemUpdateInput, options?: Parameters<typeof customFetch>[1]): Promise<SafeguardingReviewItemDetailResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+return customFetch<SafeguardingReviewItemDetailResponse>(getUpdateSafeguardingReviewItemUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(safeguardingReviewItemUpdateInput)
+  }
+);}
+
+
+
+
+
+export const getUpdateSafeguardingReviewItemMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateSafeguardingReviewItem>>, TError,UpdateSafeguardingReviewItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateSafeguardingReviewItem>>, TError,UpdateSafeguardingReviewItemMutationVariables, TContext> => {
+
+const mutationKey = ['updateSafeguardingReviewItem'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateSafeguardingReviewItem>>, UpdateSafeguardingReviewItemMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateSafeguardingReviewItem(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateSafeguardingReviewItemMutationResult = NonNullable<Awaited<ReturnType<typeof updateSafeguardingReviewItem>>>
+    export type UpdateSafeguardingReviewItemMutationBody = BodyType<SafeguardingReviewItemUpdateInput>
+    export type UpdateSafeguardingReviewItemMutationError = ErrorType<ErrorResponse>
+    export type UpdateSafeguardingReviewItemMutationVariables = {id: number;data: BodyType<SafeguardingReviewItemUpdateInput>}
+
+    /**
+ * @summary Record human review of a Safeguarding Review Item
+ */
+export const useUpdateSafeguardingReviewItem = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateSafeguardingReviewItem>>, TError,UpdateSafeguardingReviewItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateSafeguardingReviewItem>>,
+        TError,
+        UpdateSafeguardingReviewItemMutationVariables,
+        TContext
+      > => {
+      return useMutation(getUpdateSafeguardingReviewItemMutationOptions(options));
+    }
 
 export const getApproveTeacherRegistrationUrl = (id: number,) => {
 

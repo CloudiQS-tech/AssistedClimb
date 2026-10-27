@@ -13,6 +13,8 @@ import { logger } from "./logger";
 import { recordDeletionTombstones } from "./deletion-ledger";
 import { getRestorationAdmissionState } from "./restoration-quarantine";
 import { acquireRetentionPolicyMutationLock } from "./organisation-retention";
+import { enqueueAiCredentialSecretCleanup } from "./ai-credential-secret-cleanup-queue";
+import { invalidateAiCredentialSecret } from "./ai-credential-secret-store";
 
 export const ORGANISATION_DELETION_RETENTION_DAYS = 30;
 const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -21,6 +23,7 @@ type DeletedOrganisation = {
   id: number;
   name: string;
   slug: string;
+  aiKeySecretRef: string | null;
   deletedAt: Date;
   deletedByCigAdminId: number | null;
 };
@@ -50,6 +53,7 @@ export async function permanentlyDeleteSoftDeletedOrganisation(
         id: organisationsTable.id,
         name: organisationsTable.name,
         slug: organisationsTable.slug,
+        aiKeySecretRef: organisationsTable.aiKeySecretRef,
         deletedAt: organisationsTable.deletedAt,
         deletedByCigAdminId: organisationsTable.deletedByCigAdminId,
       })
@@ -74,6 +78,9 @@ export async function permanentlyDeleteSoftDeletedOrganisation(
     if (activeRequestControls.some(
       (control) => control.kind !== "restriction" || control.processingLimits.includes("deletion"),
     )) return null;
+    if (organisation.aiKeySecretRef) {
+      await enqueueAiCredentialSecretCleanup(tx, organisation.id, organisation.aiKeySecretRef);
+    }
 
     const teacherIds = await tx.select({ id: teachersTable.id })
       .from(teachersTable).where(eq(teachersTable.organisationId, organisation.id));
@@ -123,6 +130,9 @@ export async function permanentlyDeleteSoftDeletedOrganisation(
     return { ...organisation, deletedAt: organisation.deletedAt };
   });
 
+  if (deleted?.aiKeySecretRef) {
+    invalidateAiCredentialSecret(deleted.id, deleted.aiKeySecretRef);
+  }
   return deleted;
 }
 

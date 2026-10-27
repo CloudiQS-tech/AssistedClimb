@@ -6,7 +6,7 @@ import {
   PREVIEW_SESSION_HEADER,
   updatePreviewStudentActivitySession,
 } from "../../lib/preview-session";
-import { eq, and, sql, desc, asc, gte, lte, lt, isNull } from "drizzle-orm";
+import { eq, and, sql, desc, asc, gte, lte, lt, inArray, isNull } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import {
   db,
@@ -19,6 +19,7 @@ import {
   stageEntriesTable,
   developmentSnapshotsTable,
   chatMessagesTable,
+  studentChatProviderSafetyFlagsTable,
   teacherFeedbackTable,
   teacherMessagesTable,
   auditLogTable,
@@ -40,8 +41,18 @@ import {
   type ConversationContext,
 } from "../../lib/ai";
 import { moderateStudentMessage } from "../../lib/moderation";
+import {
+  findLocalSafeguardingMatch,
+  extractSubmittedClimbText,
+  isExplicitClimbSubmission,
+  redactSafeguardingProviderHistory,
+  SAFEGUARDING_CHAT_REPLY,
+  type NormalizedProviderSignal,
+} from "../../lib/safeguarding-screening";
+import { notifySafeguardingReviewers, recordSafeguardingSubmission } from "../../lib/safeguarding-review";
 import { regenerateAnonymousSessionPreservingSiteAccess } from "../../lib/session-cookie";
 import { createStudentJoinLimiter } from "./join-limiter";
+import { getSessionIdleTimeoutMs } from "../../lib/session-policy";
 import {
   CheckStudentJoinBody,
   StudentJoinBody,
@@ -149,8 +160,10 @@ async function getOrgAiConfig(classId: number): Promise<OrgAiConfig | null> {
 
   const [org] = await db
     .select({
+      organisationId: organisationsTable.id,
       aiProvider: organisationsTable.aiProvider,
       aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
+      aiKeySecretRef: organisationsTable.aiKeySecretRef,
       azureEndpoint: organisationsTable.azureEndpoint,
       aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged,
       aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed,
@@ -1098,6 +1111,7 @@ router.post("/student/join", joinLimiter, async (req, res): Promise<void> => {
   req.session.teacherId = undefined;
   req.session.sessionStartedAt = Date.now();
   req.session.lastActivityAt = req.session.sessionStartedAt;
+  req.session.cookie.maxAge = getSessionIdleTimeoutMs("student");
 
   await new Promise<void>((resolve, reject) =>
     req.session.save((err) => (err ? reject(err) : resolve())),
@@ -1613,6 +1627,10 @@ router.put(
     }
 
     const sessionId = req.studentSession!.id;
+    if (parsed.data.submission === true && !isExplicitClimbSubmission(parsed.data.submission, contentJson)) {
+      res.status(400).json({ error: "An explicit completion marker is required for a submitted stage." });
+      return;
+    }
 
     const write = await withWritableStudentSession(req, res, async (tx) => {
       const [existing] = await tx
@@ -1620,22 +1638,61 @@ router.put(
         .from(stageEntriesTable)
         .where(and(eq(stageEntriesTable.sessionId, sessionId), eq(stageEntriesTable.stage, stage)));
 
+      let entry: typeof stageEntriesTable.$inferSelect;
       if (existing) {
-        const [entry] = await tx
+        const [updatedEntry] = await tx
           .update(stageEntriesTable)
           .set({ contentJson, updatedAt: new Date() })
           .where(eq(stageEntriesTable.id, existing.id))
           .returning();
-        return entry;
+        entry = updatedEntry;
+      } else {
+        const [insertedEntry] = await tx
+          .insert(stageEntriesTable)
+          .values({ sessionId, stage, contentJson })
+          .returning();
+        entry = insertedEntry;
       }
-      const [entry] = await tx
-        .insert(stageEntriesTable)
-        .values({ sessionId, stage, contentJson })
-        .returning();
-      return entry;
+
+      let safeguardingNotificationId: number | null = null;
+      if (isExplicitClimbSubmission(parsed.data.submission, contentJson)) {
+        const studentText = extractSubmittedClimbText(stage, contentJson);
+        const localMatch = findLocalSafeguardingMatch(studentText);
+        if (localMatch) {
+          const [classOwner] = await tx
+            .select({ organisationId: teachersTable.organisationId })
+            .from(classesTable)
+            .innerJoin(teachersTable, eq(classesTable.teacherId, teachersTable.id))
+            .where(eq(classesTable.id, req.studentSession!.classId));
+          if (classOwner?.organisationId) {
+            const marker = (contentJson as Record<string, unknown>)._studentCompletion;
+            const markedAt = marker && typeof marker === "object"
+              ? (marker as Record<string, unknown>).markedAt
+              : null;
+            const sourceSubmissionId = typeof markedAt === "string" && markedAt.length <= 80
+              ? `${stage}:${markedAt}`
+              : `${stage}:${entry.updatedAt.toISOString()}`;
+            const recorded = await recordSafeguardingSubmission(tx, {
+              organisationId: classOwner.organisationId,
+              classId: req.studentSession!.classId,
+              studentSessionId: sessionId,
+              sourceType: "climb",
+              sourceSubmissionId,
+              stage,
+              studentText,
+              localMatch,
+            });
+            if (recorded?.created) safeguardingNotificationId = recorded.id;
+          }
+        }
+      }
+      return { entry, safeguardingNotificationId };
     }, { checkTaskDeadline: true });
     if (!write.allowed) return;
-    const entry = write.result;
+    const { entry, safeguardingNotificationId } = write.result;
+    if (safeguardingNotificationId !== null) {
+      void notifySafeguardingReviewers(safeguardingNotificationId).catch(() => undefined);
+    }
 
     res.json(UpdateStudentStageResponse.parse(entry));
   },
@@ -1726,18 +1783,40 @@ router.post(
       res.status(400).json({ error: parsed.error.message });
       return;
     }
-    const { message, bloomLevel, torchSuggestion } = parsed.data;
+    const { message, bloomLevel, torchSuggestion: requestedTorchSuggestion } = parsed.data;
     const sessionId = req.studentSession!.id;
     const classId = req.studentSession!.classId;
 
+    const localMatch = findLocalSafeguardingMatch(message);
+    const torchSuggestion = localMatch ? undefined : requestedTorchSuggestion;
+    const sourceSubmissionId = randomUUID();
+    let organisationIdForScreening: number | null = null;
+    if (localMatch) {
+      organisationIdForScreening = await getOrganisationIdForClass(classId);
+      if (organisationIdForScreening !== null) {
+        const recorded = await db.transaction((tx) => recordSafeguardingSubmission(tx, {
+          organisationId: organisationIdForScreening!,
+          classId,
+          studentSessionId: sessionId,
+          sourceType: "student_ai",
+          sourceSubmissionId,
+          studentText: message,
+          localMatch,
+        }));
+        if (recorded?.created) {
+          void notifySafeguardingReviewers(recorded.id).catch(() => undefined);
+        }
+      }
+    }
+
     const moderation = moderateStudentMessage(message);
-    if (moderation.blocked) {
+    if (moderation.blocked && !localMatch) {
       res.status(400).json({ error: moderation.reason });
       return;
     }
 
     const [taskRow] = await db.select().from(tasksTable).where(eq(tasksTable.classId, classId));
-    if (bloomLevel && taskRow && !taskGoals(taskRow).includes(bloomLevel)) {
+    if (!localMatch && bloomLevel && taskRow && !taskGoals(taskRow).includes(bloomLevel)) {
       res.status(400).json({ error: "Select one of the learning goals set by your teacher." });
       return;
     }
@@ -1761,7 +1840,7 @@ router.post(
       }
     }
 
-    const organisationId = await getOrganisationIdForClass(classId);
+    const organisationId = organisationIdForScreening ?? await getOrganisationIdForClass(classId);
     if (organisationId === null) {
       res.status(403).json({ error: "This school's account is no longer active." });
       return;
@@ -1774,6 +1853,45 @@ router.post(
       res.status(budget.status).json({ error: budget.error });
       return;
     }
+
+    const providerSignals: NormalizedProviderSignal[] = [];
+    const persistProviderSignals = async () => {
+      if (providerSignals.length === 0) return;
+      try {
+        if (budget.chatMessageId === null) {
+          throw new Error("student_chat_message_not_persisted");
+        }
+        await db
+          .insert(studentChatProviderSafetyFlagsTable)
+          .values({ chatMessageId: budget.chatMessageId })
+          .onConflictDoNothing();
+      } catch (error) {
+        req.log.error(
+          { errorType: error instanceof Error ? error.name : "unknown" },
+          "Unable to mark provider-flagged Student AI turn for history redaction",
+        );
+      }
+      try {
+        const recorded = await db.transaction((tx) => recordSafeguardingSubmission(tx, {
+          organisationId,
+          classId,
+          studentSessionId: sessionId,
+          sourceType: "student_ai",
+          sourceSubmissionId,
+          studentText: message,
+          localMatch,
+          providerSignals,
+        }));
+        if (recorded?.created) {
+          void notifySafeguardingReviewers(recorded.id).catch(() => undefined);
+        }
+      } catch (error) {
+        req.log.error(
+          { errorType: error instanceof Error ? error.name : "unknown" },
+          "Unable to save Student AI provider safety signal",
+        );
+      }
+    };
 
     try {
       const taskContext = taskRow
@@ -1805,6 +1923,7 @@ router.post(
           .from(chatMessagesTable)
           .where(and(eq(chatMessagesTable.sessionId, sessionId), eq(chatMessagesTable.role, "user"))),
         db.select({
+          id: chatMessagesTable.id,
           role: chatMessagesTable.role,
           content: chatMessagesTable.content,
         })
@@ -1816,6 +1935,16 @@ router.post(
           .orderBy(desc(chatMessagesTable.id))
           .limit(STUDENT_CHAT_CONTEXT_LIMIT),
       ]);
+      const priorChatMessageIds = storedChatHistoryDesc.map((item) => item.id);
+      const providerSafetyFlaggedRows = priorChatMessageIds.length > 0
+        ? await db
+            .select({ chatMessageId: studentChatProviderSafetyFlagsTable.chatMessageId })
+            .from(studentChatProviderSafetyFlagsTable)
+            .where(inArray(studentChatProviderSafetyFlagsTable.chatMessageId, priorChatMessageIds))
+        : [];
+      const providerSafetyFlaggedMessageIds = new Set(
+        providerSafetyFlaggedRows.map((row) => row.chatMessageId),
+      );
       const mapContent: MapContent | null = mapEntry?.contentJson
         ? {
             taskUnderstanding: (mapEntry.contentJson as any).taskUnderstanding ?? undefined,
@@ -1830,10 +1959,13 @@ router.post(
         if (bl) bloomCounts[bl] = (bloomCounts[bl] ?? 0) + 1;
       }
       if (bloomLevel) bloomCounts[bloomLevel] = (bloomCounts[bloomLevel] ?? 0) + 1;
-      const chatHistory = storedChatHistoryDesc.reverse().map((item) => ({
-        role: item.role === "assistant" ? "assistant" : "user",
-        content: item.content,
-      }));
+      const chatHistory = redactSafeguardingProviderHistory(
+        storedChatHistoryDesc.reverse().map((item) => ({
+          role: item.role,
+          content: item.content,
+          providerSafetyFlagged: providerSafetyFlaggedMessageIds.has(item.id),
+        })),
+      );
       const convCtx: ConversationContext = {
         turnCount: priorUserMsgs.length,
         bloomCounts,
@@ -1845,9 +1977,23 @@ router.post(
 
       let assistantContent: string;
       try {
-        const orgConfig = await getOrgAiConfig(classId);
-        assistantContent = await callAI(message, chatHistory, taskContext, bloomLevel ?? null, orgConfig, mapContent, convCtx);
+        if (localMatch) {
+          assistantContent = SAFEGUARDING_CHAT_REPLY;
+        } else {
+          const orgConfig = await getOrgAiConfig(classId);
+          assistantContent = await callAI(
+            message,
+            chatHistory,
+            taskContext,
+            bloomLevel ?? null,
+            orgConfig,
+            mapContent,
+            convCtx,
+            (signal) => providerSignals.push(signal),
+          );
+        }
       } catch (err) {
+        await persistProviderSignals();
         req.log.error({ err }, "AI proxy error");
         const msg = err instanceof Error ? err.message : String(err);
         const isConfig = msg.includes("AI_PROVIDER") || msg.includes("AI_API_KEY") || msg.includes("not set") || msg.includes("Unknown AI_PROVIDER");
@@ -1871,14 +2017,25 @@ router.post(
         return;
       }
 
+      await persistProviderSignals();
+
       const assistantWrite = await withWritableStudentSession(req, res, async (tx) => {
         const acceptedAt = new Date();
-        await tx.insert(chatMessagesTable).values({
+        const [assistantMessage] = await tx.insert(chatMessagesTable).values({
           sessionId,
           role: "assistant",
           content: assistantContent,
           bloomLevel: bloomLevel ?? null,
-        });
+        }).returning({ id: chatMessagesTable.id });
+        if (providerSignals.length > 0 && assistantMessage && budget.chatMessageId !== null) {
+          await tx
+            .insert(studentChatProviderSafetyFlagsTable)
+            .values([
+              { chatMessageId: budget.chatMessageId },
+              { chatMessageId: assistantMessage.id },
+            ])
+            .onConflictDoNothing();
+        }
         if (torchSuggestion) {
           const [torchEntry] = await tx
             .select({ id: stageEntriesTable.id, contentJson: stageEntriesTable.contentJson })

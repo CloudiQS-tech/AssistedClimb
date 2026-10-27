@@ -359,6 +359,185 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /teacher/org/teacher/{id}/safeguarding-reviewer:
+    put:
+      operationId: setSafeguardingReviewerPermission
+      tags: [teacher]
+      summary: Assign or remove Safeguarding Reviewer permission
+      description: School Admin only. Assignment requires the school's exact authorization confirmation.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SafeguardingReviewerPermissionInput"
+      responses:
+        "200":
+          description: Permission updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SafeguardingReviewerPermissionResponse"
+        "400":
+          description: Invalid confirmation or request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: School Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Teacher not found in the current school
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/safeguarding/items:
+    get:
+      operationId: listSafeguardingReviewItems
+      tags: [teacher]
+      summary: List Safeguarding Review Items
+      description: Safeguarding Reviewer permission is required. Results are restricted to the reviewer's school.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [all, new, under_review, closed]
+            default: all
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 1
+      responses:
+        "200":
+          description: School-scoped review queue
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SafeguardingReviewItemListResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Safeguarding Reviewer permission required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /teacher/safeguarding/items/{id}:
+    get:
+      operationId: getSafeguardingReviewItem
+      tags: [teacher]
+      summary: Open a Safeguarding Review Item
+      description: Opening a review item is recorded in the restricted audit history.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Review item details and audit history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SafeguardingReviewItemDetailResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Safeguarding Reviewer permission required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Review item not found in the current school
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateSafeguardingReviewItem
+      tags: [teacher]
+      summary: Record human review of a Safeguarding Review Item
+      description: Updates are recorded in the restricted audit history. The system does not recommend a safeguarding decision.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SafeguardingReviewItemUpdateInput"
+      responses:
+        "200":
+          description: Updated review item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SafeguardingReviewItemDetailResponse"
+        "400":
+          description: Invalid review fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Safeguarding Reviewer permission required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Review item not found in the current school
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /teacher/org/teacher/{id}/approve:
     post:
       operationId: approveTeacherRegistration
@@ -3351,8 +3530,14 @@ components:
         schoolAdminRole:
           type: ["string", "null"]
           enum: [master, subadmin, null]
+        canReviewSafeguarding:
+          type: boolean
         organisationId:
           type: ["integer", "null"]
+        mustChangePassword:
+          type: boolean
+        totpEnabled:
+          type: boolean
         emailVerified:
           type: boolean
         createdAt:
@@ -3363,6 +3548,9 @@ components:
         - email
         - name
         - isItAdmin
+        - canReviewSafeguarding
+        - mustChangePassword
+        - totpEnabled
         - emailVerified
         - createdAt
 
@@ -3401,6 +3589,8 @@ components:
         schoolAdminRole:
           type: ["string", "null"]
           enum: [master, subadmin, null]
+        canReviewSafeguarding:
+          type: boolean
         accountStatus:
           type: string
           enum: [active, suspended, deleted]
@@ -3434,6 +3624,7 @@ components:
         - email
         - name
         - isItAdmin
+        - canReviewSafeguarding
         - accountStatus
         - accountStatusChangedAt
         - approvalStatus
@@ -3487,6 +3678,225 @@ components:
         - page
         - pageSize
         - totalPages
+
+    SafeguardingReviewerPermissionInput:
+      type: object
+      properties:
+        canReviewSafeguarding:
+          type: boolean
+        confirmation:
+          type: string
+          maxLength: 180
+      required: [canReviewSafeguarding]
+
+    SafeguardingReviewerPermissionResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        canReviewSafeguarding:
+          type: boolean
+      required: [id, canReviewSafeguarding]
+
+    SafeguardingCategory:
+      type: string
+      enum:
+        - self_harm_or_suicide
+        - harm_by_another_person
+        - sexual_abuse_or_exploitation
+        - serious_violence_or_threat
+        - grooming_coercion_or_blackmail
+        - immediate_danger
+        - other_serious_concern
+        - provider_safety_signal
+
+    SafeguardingProviderSignal:
+      type: object
+      properties:
+        provider:
+          type: string
+          enum: [azure, gemini]
+        categories:
+          type: array
+          items:
+            type: string
+            maxLength: 80
+      required: [provider, categories]
+
+    SafeguardingReviewItemSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        caseReference:
+          type: string
+        category:
+          $ref: "#/components/schemas/SafeguardingCategory"
+        technicalReason:
+          type: string
+        status:
+          type: string
+          enum: [new, under_review, closed]
+        sourceType:
+          type: string
+          enum: [student_ai, climb]
+        sourceLocation:
+          type: string
+        studentName:
+          type: string
+        className:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        reviewerName:
+          type: ["string", "null"]
+      required:
+        - id
+        - caseReference
+        - category
+        - technicalReason
+        - status
+        - sourceType
+        - sourceLocation
+        - studentName
+        - className
+        - createdAt
+        - reviewerName
+
+    SafeguardingReviewItemListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SafeguardingReviewItemSummary"
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        totalPages:
+          type: integer
+          minimum: 1
+      required: [items, total, page, pageSize, totalPages]
+
+    SafeguardingReviewAuditEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        action:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        actorName:
+          type: ["string", "null"]
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [id, action, createdAt, actorName, metadata]
+
+    SafeguardingReviewItemDetail:
+      allOf:
+        - $ref: "#/components/schemas/SafeguardingReviewItemSummary"
+        - type: object
+          properties:
+            schoolName:
+              type: string
+            excerpt:
+              type: string
+            surroundingContext:
+              type: string
+            detectedBy:
+              type: string
+              enum: [local, provider, both]
+            providerSignals:
+              type: array
+              items:
+                $ref: "#/components/schemas/SafeguardingProviderSignal"
+            reviewerId:
+              type: ["integer", "null"]
+            reviewerEmail:
+              type: ["string", "null"]
+            reviewedAt:
+              type: ["string", "null"]
+              format: date-time
+            actionTaken:
+              type: ["string", "null"]
+            decision:
+              type: ["string", "null"]
+            rationale:
+              type: ["string", "null"]
+            outcome:
+              type: ["string", "null"]
+            externalReference:
+              type: ["string", "null"]
+            notificationStatus:
+              type: string
+            updatedAt:
+              type: string
+              format: date-time
+            closedAt:
+              type: ["string", "null"]
+              format: date-time
+            auditHistory:
+              type: array
+              items:
+                $ref: "#/components/schemas/SafeguardingReviewAuditEntry"
+          required:
+            - schoolName
+            - excerpt
+            - surroundingContext
+            - detectedBy
+            - providerSignals
+            - reviewerId
+            - reviewerEmail
+            - reviewedAt
+            - actionTaken
+            - decision
+            - rationale
+            - outcome
+            - externalReference
+            - notificationStatus
+            - updatedAt
+            - closedAt
+            - auditHistory
+
+    SafeguardingReviewItemDetailResponse:
+      type: object
+      properties:
+        item:
+          $ref: "#/components/schemas/SafeguardingReviewItemDetail"
+      required: [item]
+
+    SafeguardingReviewItemUpdateInput:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [new, under_review, closed]
+        actionTaken:
+          type: string
+          maxLength: 2000
+        decision:
+          type: string
+          maxLength: 500
+        rationale:
+          type: string
+          maxLength: 3000
+        outcome:
+          type: string
+          maxLength: 2000
+        externalReference:
+          type: string
+          maxLength: 250
+
 
     TeacherDepartureClass:
       type: object
@@ -3983,8 +4393,6 @@ components:
           type: boolean
         aiProvider:
           type: ["string", "null"]
-        aiKeyMasked:
-          type: ["string", "null"]
         azureEndpoint:
           type: ["string", "null"]
         dataProcessingAcknowledged:
@@ -4284,6 +4692,7 @@ components:
           enum: [gemini, azure]
         aiKey:
           type: string
+          writeOnly: true
           minLength: 1
         azureEndpoint:
           type: string
@@ -4866,6 +5275,9 @@ components:
         contentJson:
           type: object
           additionalProperties: true
+        submission:
+          type: boolean
+          description: True only when a student explicitly marks the stage complete; autosaves must omit or set false.
       required:
         - contentJson
 

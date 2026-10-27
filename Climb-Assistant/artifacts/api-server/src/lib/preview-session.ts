@@ -1,5 +1,8 @@
 import { createHash, randomBytes } from "crypto";
-import { SESSION_ABSOLUTE_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "./session-policy";
+import {
+  getSessionIdleTimeoutMs,
+  SESSION_ABSOLUTE_TIMEOUT_MS,
+} from "./session-policy";
 
 export const PREVIEW_SESSION_HEADER = "x-assisted-climb-preview-session";
 
@@ -35,7 +38,7 @@ function discardExpiredPreviewSessions(now: number): void {
   for (const [tokenHash, session] of previewSessions) {
     if (
       now - session.startedAt >= SESSION_ABSOLUTE_TIMEOUT_MS
-      || now - session.lastActivityAt >= SESSION_IDLE_TIMEOUT_MS
+      || now - session.lastActivityAt >= getSessionIdleTimeoutMs(session.kind)
     ) {
       previewSessions.delete(tokenHash);
     }
@@ -74,7 +77,7 @@ export function resolvePreviewTeacherSession(token: string | undefined, refreshA
 
   if (
     now - session.startedAt >= SESSION_ABSOLUTE_TIMEOUT_MS
-    || now - session.lastActivityAt >= SESSION_IDLE_TIMEOUT_MS
+    || now - session.lastActivityAt >= getSessionIdleTimeoutMs(session.kind)
   ) {
     previewSessions.delete(tokenHash);
     return undefined;
@@ -125,7 +128,7 @@ export function resolvePreviewStudentSession(
   if (!session || session.kind !== "student") return undefined;
   if (
     now - session.startedAt >= SESSION_ABSOLUTE_TIMEOUT_MS
-    || now - session.lastActivityAt >= SESSION_IDLE_TIMEOUT_MS
+    || now - session.lastActivityAt >= getSessionIdleTimeoutMs(session.kind)
   ) {
     previewSessions.delete(tokenHash);
     return undefined;

@@ -404,8 +404,11 @@ export interface TeacherProfile {
   isItAdmin: boolean;
   /** @nullable */
   schoolAdminRole?: TeacherProfileSchoolAdminRole;
+  canReviewSafeguarding: boolean;
   /** @nullable */
   organisationId?: number | null;
+  mustChangePassword: boolean;
+  totpEnabled: boolean;
   emailVerified: boolean;
   createdAt: string;
 }
@@ -459,6 +462,7 @@ export interface TeacherDirectoryItem {
   isItAdmin: boolean;
   /** @nullable */
   schoolAdminRole?: TeacherDirectoryItemSchoolAdminRole;
+  canReviewSafeguarding: boolean;
   accountStatus: TeacherDirectoryItemAccountStatus;
   /** @nullable */
   accountStatusChangedAt: string | null;
@@ -508,6 +512,165 @@ export interface TeacherDirectoryResponse {
   pageSize: number;
   /** @minimum 1 */
   totalPages: number;
+}
+
+export interface SafeguardingReviewerPermissionInput {
+  canReviewSafeguarding: boolean;
+  /** @maxLength 180 */
+  confirmation?: string;
+}
+
+export interface SafeguardingReviewerPermissionResponse {
+  id: number;
+  canReviewSafeguarding: boolean;
+}
+
+export type SafeguardingCategory = typeof SafeguardingCategory[keyof typeof SafeguardingCategory];
+
+
+export const SafeguardingCategory = {
+  self_harm_or_suicide: 'self_harm_or_suicide',
+  harm_by_another_person: 'harm_by_another_person',
+  sexual_abuse_or_exploitation: 'sexual_abuse_or_exploitation',
+  serious_violence_or_threat: 'serious_violence_or_threat',
+  grooming_coercion_or_blackmail: 'grooming_coercion_or_blackmail',
+  immediate_danger: 'immediate_danger',
+  other_serious_concern: 'other_serious_concern',
+  provider_safety_signal: 'provider_safety_signal',
+} as const;
+
+export type SafeguardingProviderSignalProvider = typeof SafeguardingProviderSignalProvider[keyof typeof SafeguardingProviderSignalProvider];
+
+
+export const SafeguardingProviderSignalProvider = {
+  azure: 'azure',
+  gemini: 'gemini',
+} as const;
+
+export interface SafeguardingProviderSignal {
+  provider: SafeguardingProviderSignalProvider;
+  /** @items.maxLength 80 */
+  categories: string[];
+}
+
+export type SafeguardingReviewItemSummaryStatus = typeof SafeguardingReviewItemSummaryStatus[keyof typeof SafeguardingReviewItemSummaryStatus];
+
+
+export const SafeguardingReviewItemSummaryStatus = {
+  new: 'new',
+  under_review: 'under_review',
+  closed: 'closed',
+} as const;
+
+export type SafeguardingReviewItemSummarySourceType = typeof SafeguardingReviewItemSummarySourceType[keyof typeof SafeguardingReviewItemSummarySourceType];
+
+
+export const SafeguardingReviewItemSummarySourceType = {
+  student_ai: 'student_ai',
+  climb: 'climb',
+} as const;
+
+export interface SafeguardingReviewItemSummary {
+  id: number;
+  caseReference: string;
+  category: SafeguardingCategory;
+  technicalReason: string;
+  status: SafeguardingReviewItemSummaryStatus;
+  sourceType: SafeguardingReviewItemSummarySourceType;
+  sourceLocation: string;
+  studentName: string;
+  className: string;
+  createdAt: string;
+  /** @nullable */
+  reviewerName: string | null;
+}
+
+export interface SafeguardingReviewItemListResponse {
+  items: SafeguardingReviewItemSummary[];
+  /** @minimum 0 */
+  total: number;
+  /** @minimum 1 */
+  page: number;
+  /** @minimum 1 */
+  pageSize: number;
+  /** @minimum 1 */
+  totalPages: number;
+}
+
+export type SafeguardingReviewAuditEntryMetadata = { [key: string]: unknown };
+
+export interface SafeguardingReviewAuditEntry {
+  id: number;
+  action: string;
+  createdAt: string;
+  /** @nullable */
+  actorName: string | null;
+  metadata: SafeguardingReviewAuditEntryMetadata;
+}
+
+export type SafeguardingReviewItemDetailDetectedBy = typeof SafeguardingReviewItemDetailDetectedBy[keyof typeof SafeguardingReviewItemDetailDetectedBy];
+
+
+export const SafeguardingReviewItemDetailDetectedBy = {
+  local: 'local',
+  provider: 'provider',
+  both: 'both',
+} as const;
+
+export type SafeguardingReviewItemDetail = SafeguardingReviewItemSummary & ({
+  schoolName: string;
+  excerpt: string;
+  surroundingContext: string;
+  detectedBy: SafeguardingReviewItemDetailDetectedBy;
+  providerSignals: SafeguardingProviderSignal[];
+  /** @nullable */
+  reviewerId: number | null;
+  /** @nullable */
+  reviewerEmail: string | null;
+  /** @nullable */
+  reviewedAt: string | null;
+  /** @nullable */
+  actionTaken: string | null;
+  /** @nullable */
+  decision: string | null;
+  /** @nullable */
+  rationale: string | null;
+  /** @nullable */
+  outcome: string | null;
+  /** @nullable */
+  externalReference: string | null;
+  notificationStatus: string;
+  updatedAt: string;
+  /** @nullable */
+  closedAt: string | null;
+  auditHistory: SafeguardingReviewAuditEntry[];
+});
+
+export interface SafeguardingReviewItemDetailResponse {
+  item: SafeguardingReviewItemDetail;
+}
+
+export type SafeguardingReviewItemUpdateInputStatus = typeof SafeguardingReviewItemUpdateInputStatus[keyof typeof SafeguardingReviewItemUpdateInputStatus];
+
+
+export const SafeguardingReviewItemUpdateInputStatus = {
+  new: 'new',
+  under_review: 'under_review',
+  closed: 'closed',
+} as const;
+
+export interface SafeguardingReviewItemUpdateInput {
+  status?: SafeguardingReviewItemUpdateInputStatus;
+  /** @maxLength 2000 */
+  actionTaken?: string;
+  /** @maxLength 500 */
+  decision?: string;
+  /** @maxLength 3000 */
+  rationale?: string;
+  /** @maxLength 2000 */
+  outcome?: string;
+  /** @maxLength 250 */
+  externalReference?: string;
 }
 
 export interface TeacherDepartureClass {
@@ -838,8 +1001,6 @@ export interface OrgAiSettings {
   configured: boolean;
   /** @nullable */
   aiProvider?: string | null;
-  /** @nullable */
-  aiKeyMasked?: string | null;
   /** @nullable */
   azureEndpoint?: string | null;
   dataProcessingAcknowledged?: boolean;
@@ -1555,6 +1716,8 @@ export type StageEntryInputContentJson = { [key: string]: unknown };
 
 export interface StageEntryInput {
   contentJson: StageEntryInputContentJson;
+  /** True only when a student explicitly marks the stage complete; autosaves must omit or set false. */
+  submission?: boolean;
 }
 
 export type ChatMessageInputTorchSuggestion = {
@@ -2225,6 +2388,25 @@ export type ListOrganisationTeachersDirection = typeof ListOrganisationTeachersD
 export const ListOrganisationTeachersDirection = {
   asc: 'asc',
   desc: 'desc',
+} as const;
+
+export type ListSafeguardingReviewItemsParams = {
+status?: ListSafeguardingReviewItemsStatus;
+/**
+ * @minimum 1
+ * @maximum 10000
+ */
+page?: number;
+};
+
+export type ListSafeguardingReviewItemsStatus = typeof ListSafeguardingReviewItemsStatus[keyof typeof ListSafeguardingReviewItemsStatus];
+
+
+export const ListSafeguardingReviewItemsStatus = {
+  all: 'all',
+  new: 'new',
+  under_review: 'under_review',
+  closed: 'closed',
 } as const;
 
 export type RunOrganisationRetentionPolicy200ProcessedItemOutcome = typeof RunOrganisationRetentionPolicy200ProcessedItemOutcome[keyof typeof RunOrganisationRetentionPolicy200ProcessedItemOutcome];

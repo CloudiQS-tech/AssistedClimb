@@ -9,4 +9,6 @@ import type { StageEntryInputContentJson } from './stageEntryInputContentJson';
 
 export interface StageEntryInput {
   contentJson: StageEntryInputContentJson;
+  /** True only when a student explicitly marks the stage complete; autosaves must omit or set false. */
+  submission?: boolean;
 }

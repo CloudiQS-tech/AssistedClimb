@@ -76,7 +76,10 @@ export const LoginTeacherResponse = zod.object({
   "name": zod.string(),
   "isItAdmin": zod.boolean(),
   "schoolAdminRole": zod.union([zod.literal('master'),zod.literal('subadmin'),zod.literal(null)]).nullish(),
+  "canReviewSafeguarding": zod.boolean(),
   "organisationId": zod.int().nullish(),
+  "mustChangePassword": zod.boolean(),
+  "totpEnabled": zod.boolean(),
   "emailVerified": zod.boolean(),
   "createdAt": zod.coerce.date()
 })
@@ -132,7 +135,10 @@ export const RestoreTeacherSessionResponse = zod.object({
   "name": zod.string(),
   "isItAdmin": zod.boolean(),
   "schoolAdminRole": zod.union([zod.literal('master'),zod.literal('subadmin'),zod.literal(null)]).nullish(),
+  "canReviewSafeguarding": zod.boolean(),
   "organisationId": zod.int().nullish(),
+  "mustChangePassword": zod.boolean(),
+  "totpEnabled": zod.boolean(),
   "emailVerified": zod.boolean(),
   "createdAt": zod.coerce.date()
 }).and(zod.object({
@@ -150,7 +156,10 @@ export const GetTeacherMeResponse = zod.object({
   "name": zod.string(),
   "isItAdmin": zod.boolean(),
   "schoolAdminRole": zod.union([zod.literal('master'),zod.literal('subadmin'),zod.literal(null)]).nullish(),
+  "canReviewSafeguarding": zod.boolean(),
   "organisationId": zod.int().nullish(),
+  "mustChangePassword": zod.boolean(),
+  "totpEnabled": zod.boolean(),
   "emailVerified": zod.boolean(),
   "createdAt": zod.coerce.date()
 })
@@ -208,6 +217,7 @@ export const ListOrganisationTeachersResponse = zod.object({
   "name": zod.string(),
   "isItAdmin": zod.boolean(),
   "schoolAdminRole": zod.union([zod.literal('master'),zod.literal('subadmin'),zod.literal(null)]).nullish(),
+  "canReviewSafeguarding": zod.boolean(),
   "accountStatus": zod.enum(['active', 'suspended', 'deleted']),
   "accountStatusChangedAt": zod.coerce.date().nullable(),
   "approvalStatus": zod.enum(['pending', 'approved', 'rejected']),
@@ -224,6 +234,214 @@ export const ListOrganisationTeachersResponse = zod.object({
   "page": zod.int().min(1),
   "pageSize": zod.int().min(1),
   "totalPages": zod.int().min(1)
+})
+
+
+/**
+ * School Admin only. Assignment requires the school's exact authorization confirmation.
+ * @summary Assign or remove Safeguarding Reviewer permission
+ */
+
+
+
+export const SetSafeguardingReviewerPermissionParams = zod.object({
+  "id": zod.coerce.number().int().min(1)
+})
+
+export const setSafeguardingReviewerPermissionBodyConfirmationMax = 180;
+
+
+
+export const SetSafeguardingReviewerPermissionBody = zod.object({
+  "canReviewSafeguarding": zod.boolean(),
+  "confirmation": zod.string().max(setSafeguardingReviewerPermissionBodyConfirmationMax).optional()
+})
+
+export const SetSafeguardingReviewerPermissionResponse = zod.object({
+  "id": zod.int(),
+  "canReviewSafeguarding": zod.boolean()
+})
+
+
+/**
+ * Safeguarding Reviewer permission is required. Results are restricted to the reviewer's school.
+ * @summary List Safeguarding Review Items
+ */
+export const listSafeguardingReviewItemsQueryStatusDefault = `all`;
+export const listSafeguardingReviewItemsQueryPageDefault = 1;
+export const listSafeguardingReviewItemsQueryPageMax = 10000;
+
+
+
+export const ListSafeguardingReviewItemsQueryParams = zod.object({
+  "status": zod.enum(['all', 'new', 'under_review', 'closed']).default(listSafeguardingReviewItemsQueryStatusDefault),
+  "page": zod.coerce.number().int().min(1).max(listSafeguardingReviewItemsQueryPageMax).default(listSafeguardingReviewItemsQueryPageDefault)
+})
+
+export const listSafeguardingReviewItemsResponseTotalMin = 0;
+
+
+
+
+
+
+export const ListSafeguardingReviewItemsResponse = zod.object({
+  "items": zod.array(zod.object({
+  "id": zod.int(),
+  "caseReference": zod.string(),
+  "category": zod.enum(['self_harm_or_suicide', 'harm_by_another_person', 'sexual_abuse_or_exploitation', 'serious_violence_or_threat', 'grooming_coercion_or_blackmail', 'immediate_danger', 'other_serious_concern', 'provider_safety_signal']),
+  "technicalReason": zod.string(),
+  "status": zod.enum(['new', 'under_review', 'closed']),
+  "sourceType": zod.enum(['student_ai', 'climb']),
+  "sourceLocation": zod.string(),
+  "studentName": zod.string(),
+  "className": zod.string(),
+  "createdAt": zod.coerce.date(),
+  "reviewerName": zod.string().nullable()
+})),
+  "total": zod.int().min(listSafeguardingReviewItemsResponseTotalMin),
+  "page": zod.int().min(1),
+  "pageSize": zod.int().min(1),
+  "totalPages": zod.int().min(1)
+})
+
+
+/**
+ * Opening a review item is recorded in the restricted audit history.
+ * @summary Open a Safeguarding Review Item
+ */
+
+
+
+export const GetSafeguardingReviewItemParams = zod.object({
+  "id": zod.coerce.number().int().min(1)
+})
+
+export const getSafeguardingReviewItemResponseItemTwoProviderSignalsItemCategoriesItemMax = 80;
+
+
+
+export const GetSafeguardingReviewItemResponse = zod.object({
+  "item": zod.object({
+  "id": zod.int(),
+  "caseReference": zod.string(),
+  "category": zod.enum(['self_harm_or_suicide', 'harm_by_another_person', 'sexual_abuse_or_exploitation', 'serious_violence_or_threat', 'grooming_coercion_or_blackmail', 'immediate_danger', 'other_serious_concern', 'provider_safety_signal']),
+  "technicalReason": zod.string(),
+  "status": zod.enum(['new', 'under_review', 'closed']),
+  "sourceType": zod.enum(['student_ai', 'climb']),
+  "sourceLocation": zod.string(),
+  "studentName": zod.string(),
+  "className": zod.string(),
+  "createdAt": zod.coerce.date(),
+  "reviewerName": zod.string().nullable()
+}).and(zod.object({
+  "schoolName": zod.string(),
+  "excerpt": zod.string(),
+  "surroundingContext": zod.string(),
+  "detectedBy": zod.enum(['local', 'provider', 'both']),
+  "providerSignals": zod.array(zod.object({
+  "provider": zod.enum(['azure', 'gemini']),
+  "categories": zod.array(zod.string().max(getSafeguardingReviewItemResponseItemTwoProviderSignalsItemCategoriesItemMax))
+})),
+  "reviewerId": zod.int().nullable(),
+  "reviewerEmail": zod.string().nullable(),
+  "reviewedAt": zod.coerce.date().nullable(),
+  "actionTaken": zod.string().nullable(),
+  "decision": zod.string().nullable(),
+  "rationale": zod.string().nullable(),
+  "outcome": zod.string().nullable(),
+  "externalReference": zod.string().nullable(),
+  "notificationStatus": zod.string(),
+  "updatedAt": zod.coerce.date(),
+  "closedAt": zod.coerce.date().nullable(),
+  "auditHistory": zod.array(zod.object({
+  "id": zod.int(),
+  "action": zod.string(),
+  "createdAt": zod.coerce.date(),
+  "actorName": zod.string().nullable(),
+  "metadata": zod.record(zod.string(), zod.unknown())
+}))
+}))
+})
+
+
+/**
+ * Updates are recorded in the restricted audit history. The system does not recommend a safeguarding decision.
+ * @summary Record human review of a Safeguarding Review Item
+ */
+
+
+
+export const UpdateSafeguardingReviewItemParams = zod.object({
+  "id": zod.coerce.number().int().min(1)
+})
+
+export const updateSafeguardingReviewItemBodyActionTakenMax = 2000;
+
+export const updateSafeguardingReviewItemBodyDecisionMax = 500;
+
+export const updateSafeguardingReviewItemBodyRationaleMax = 3000;
+
+export const updateSafeguardingReviewItemBodyOutcomeMax = 2000;
+
+export const updateSafeguardingReviewItemBodyExternalReferenceMax = 250;
+
+
+
+export const UpdateSafeguardingReviewItemBody = zod.object({
+  "status": zod.enum(['new', 'under_review', 'closed']).optional(),
+  "actionTaken": zod.string().max(updateSafeguardingReviewItemBodyActionTakenMax).optional(),
+  "decision": zod.string().max(updateSafeguardingReviewItemBodyDecisionMax).optional(),
+  "rationale": zod.string().max(updateSafeguardingReviewItemBodyRationaleMax).optional(),
+  "outcome": zod.string().max(updateSafeguardingReviewItemBodyOutcomeMax).optional(),
+  "externalReference": zod.string().max(updateSafeguardingReviewItemBodyExternalReferenceMax).optional()
+})
+
+export const updateSafeguardingReviewItemResponseItemTwoProviderSignalsItemCategoriesItemMax = 80;
+
+
+
+export const UpdateSafeguardingReviewItemResponse = zod.object({
+  "item": zod.object({
+  "id": zod.int(),
+  "caseReference": zod.string(),
+  "category": zod.enum(['self_harm_or_suicide', 'harm_by_another_person', 'sexual_abuse_or_exploitation', 'serious_violence_or_threat', 'grooming_coercion_or_blackmail', 'immediate_danger', 'other_serious_concern', 'provider_safety_signal']),
+  "technicalReason": zod.string(),
+  "status": zod.enum(['new', 'under_review', 'closed']),
+  "sourceType": zod.enum(['student_ai', 'climb']),
+  "sourceLocation": zod.string(),
+  "studentName": zod.string(),
+  "className": zod.string(),
+  "createdAt": zod.coerce.date(),
+  "reviewerName": zod.string().nullable()
+}).and(zod.object({
+  "schoolName": zod.string(),
+  "excerpt": zod.string(),
+  "surroundingContext": zod.string(),
+  "detectedBy": zod.enum(['local', 'provider', 'both']),
+  "providerSignals": zod.array(zod.object({
+  "provider": zod.enum(['azure', 'gemini']),
+  "categories": zod.array(zod.string().max(updateSafeguardingReviewItemResponseItemTwoProviderSignalsItemCategoriesItemMax))
+})),
+  "reviewerId": zod.int().nullable(),
+  "reviewerEmail": zod.string().nullable(),
+  "reviewedAt": zod.coerce.date().nullable(),
+  "actionTaken": zod.string().nullable(),
+  "decision": zod.string().nullable(),
+  "rationale": zod.string().nullable(),
+  "outcome": zod.string().nullable(),
+  "externalReference": zod.string().nullable(),
+  "notificationStatus": zod.string(),
+  "updatedAt": zod.coerce.date(),
+  "closedAt": zod.coerce.date().nullable(),
+  "auditHistory": zod.array(zod.object({
+  "id": zod.int(),
+  "action": zod.string(),
+  "createdAt": zod.coerce.date(),
+  "actorName": zod.string().nullable(),
+  "metadata": zod.record(zod.string(), zod.unknown())
+}))
+}))
 })
 
 
@@ -658,7 +876,6 @@ export const KeepSessionAliveResponse = zod.object({
 export const GetOrganisationAiSettingsResponse = zod.object({
   "configured": zod.boolean(),
   "aiProvider": zod.string().nullish(),
-  "aiKeyMasked": zod.string().nullish(),
   "azureEndpoint": zod.string().nullish(),
   "dataProcessingAcknowledged": zod.boolean().optional(),
   "dataProcessingAcknowledgedAt": zod.coerce.date().nullish(),
@@ -696,7 +913,6 @@ export const UpdateOrganisationAiSettingsBody = zod.object({
 export const UpdateOrganisationAiSettingsResponse = zod.object({
   "configured": zod.boolean(),
   "aiProvider": zod.string().nullish(),
-  "aiKeyMasked": zod.string().nullish(),
   "azureEndpoint": zod.string().nullish(),
   "dataProcessingAcknowledged": zod.boolean().optional(),
   "dataProcessingAcknowledgedAt": zod.coerce.date().nullish(),
@@ -2827,7 +3043,8 @@ export const UpdateStudentStageParams = zod.object({
 })
 
 export const UpdateStudentStageBody = zod.object({
-  "contentJson": zod.record(zod.string(), zod.unknown())
+  "contentJson": zod.record(zod.string(), zod.unknown()),
+  "submission": zod.boolean().optional().describe('True only when a student explicitly marks the stage complete; autosaves must omit or set false.')
 })
 
 export const UpdateStudentStageResponse = zod.object({

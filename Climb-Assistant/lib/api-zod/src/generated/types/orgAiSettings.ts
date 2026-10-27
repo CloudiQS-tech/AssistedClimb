@@ -11,8 +11,6 @@ export interface OrgAiSettings {
   /** @nullable */
   aiProvider?: string | null;
   /** @nullable */
-  aiKeyMasked?: string | null;
-  /** @nullable */
   azureEndpoint?: string | null;
   dataProcessingAcknowledged?: boolean;
   /** @nullable */

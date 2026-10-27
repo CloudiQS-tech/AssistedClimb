@@ -1968,7 +1968,10 @@ export default function Climb() {
     setCompletionSavingStage(stage);
     setStudentAutoSaveStatus("saving");
     try {
-      await apiFetch(`/student/stages/${stage}`, { method: "PUT", body: JSON.stringify({ contentJson }) });
+      await apiFetch(`/student/stages/${stage}`, {
+        method: "PUT",
+        body: JSON.stringify({ contentJson, submission: complete }),
+      });
       const next = { ...stageCompletionsRef.current, [stage]: marker };
       stageCompletionsRef.current = next;
       setStageCompletions(next);
@@ -2110,7 +2113,7 @@ export default function Climb() {
               className="rounded-2xl border border-neutral-300 bg-white text-neutral-500 px-4 py-2.5 text-sm font-medium hover:bg-neutral-50 transition-colors"
               data-testid="link-signout"
             >
-              Leave
+              Sign out
             </button>
           </div>
         </div>

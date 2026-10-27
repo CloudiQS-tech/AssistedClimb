@@ -16,6 +16,7 @@ export interface TeacherDirectoryItem {
   isItAdmin: boolean;
   /** @nullable */
   schoolAdminRole?: TeacherDirectoryItemSchoolAdminRole;
+  canReviewSafeguarding: boolean;
   accountStatus: TeacherDirectoryItemAccountStatus;
   /** @nullable */
   accountStatusChangedAt: Date | null;

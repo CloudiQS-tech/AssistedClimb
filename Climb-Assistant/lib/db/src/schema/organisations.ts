@@ -8,6 +8,7 @@ export const organisationsTable = pgTable("organisations", {
   active: boolean("active").notNull().default(true),
   aiProvider: text("ai_provider"),
   aiKeyEncrypted: text("ai_key_encrypted"),
+  aiKeySecretRef: text("ai_key_secret_ref"),
   azureEndpoint: text("azure_endpoint"),
   aiDataProcessingAcknowledged: boolean("ai_data_processing_acknowledged").notNull().default(false),
   aiDataProcessingAcknowledgedAt: timestamp("ai_data_processing_acknowledged_at", { withTimezone: true }),

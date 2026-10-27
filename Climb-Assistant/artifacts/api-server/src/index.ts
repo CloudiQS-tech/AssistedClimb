@@ -3,6 +3,7 @@ import { logger } from "./lib/logger";
 import { startOrganisationDeletionPurge } from "./lib/organisation-deletion";
 import { startRecoverableDeletionPurge } from "./lib/recoverable-deletion";
 import { startArchiveRetentionLifecycle } from "./lib/archive-retention";
+import { startAiCredentialSecretCleanup } from "./lib/ai-credential-secret-cleanup";
 
 const rawPort = process.env["PORT"];
 
@@ -28,4 +29,5 @@ app.listen(port, (err) => {
   startOrganisationDeletionPurge();
   startRecoverableDeletionPurge();
   startArchiveRetentionLifecycle();
+  startAiCredentialSecretCleanup();
 });

@@ -18,7 +18,6 @@ import {
 interface OrgAiSettings {
   configured: boolean;
   aiProvider: string | null;
-  aiKeyMasked: string | null;
   azureEndpoint: string | null;
   dataProcessingAcknowledged: boolean;
   dataProcessingAcknowledgedAt: string | null;
@@ -37,6 +36,7 @@ interface OrgTeacher {
   email: string;
   isItAdmin: boolean;
   schoolAdminRole: "master" | "subadmin" | null;
+  canReviewSafeguarding: boolean;
   accountStatus: "active" | "suspended" | "deleted";
   accountStatusChangedAt: string | null;
   accountRecoveryUntil?: string | null;
@@ -1147,6 +1147,9 @@ export default function TeacherSettings() {
   const [unlocking, setUnlocking] = useState<number | null>(null);
   const [resettingMfa, setResettingMfa] = useState<number | null>(null);
   const [togglingAdmin, setTogglingAdmin] = useState<number | null>(null);
+  const [safeguardingReviewerSaving, setSafeguardingReviewerSaving] = useState<number | null>(null);
+  const [safeguardingReviewerConfirming, setSafeguardingReviewerConfirming] = useState<number | null>(null);
+  const [safeguardingReviewerConfirmed, setSafeguardingReviewerConfirmed] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState<number | null>(null);
   const [reviewingApproval, setReviewingApproval] = useState<number | null>(null);
   const [departureSummary, setDepartureSummary] = useState<DepartureSummary | null>(null);
@@ -1893,6 +1896,12 @@ export default function TeacherSettings() {
     }
   };
 
+  const clearAiDraft = () => {
+    setAiForm({ aiProvider: null, aiKey: "", azureEndpoint: "" });
+    setAiApprovals({ schoolAuthorised: false, termsAccepted: false, ukProcessingConfirmed: false });
+    setAiCompliance({ policyVersion: "", evidenceReference: "", reviewDate: "" });
+  };
+
   const handleSaveAiSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!aiForm.aiProvider) {
@@ -1913,12 +1922,10 @@ export default function TeacherSettings() {
       if (aiCompliance.evidenceReference.trim()) body.dataProcessingEvidenceReference = aiCompliance.evidenceReference.trim();
       if (aiCompliance.reviewDate) body.dataProcessingReviewDate = aiCompliance.reviewDate;
       if (aiForm.aiProvider === "azure" && aiForm.azureEndpoint) body.azureEndpoint = aiForm.azureEndpoint;
-      const result = await apiFetch("/teacher/org/ai-settings", { method: "PUT", body: JSON.stringify(body) });
-      setAiSettings(await apiFetch("/teacher/org/ai-settings"));
-      setAiForm({ aiProvider: null, aiKey: "", azureEndpoint: "" });
-       setAiApprovals({ schoolAuthorised: false, termsAccepted: false, ukProcessingConfirmed: false });
-       setAiCompliance({ policyVersion: "", evidenceReference: "", reviewDate: "" });
+      await apiFetch("/teacher/org/ai-settings", { method: "PUT", body: JSON.stringify(body) });
+      clearAiDraft();
       setShowAiForm(false);
+      setAiSettings(await apiFetch("/teacher/org/ai-settings"));
       toast({ title: "AI provider approved and saved" });
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -1932,6 +1939,7 @@ export default function TeacherSettings() {
       "Disable AI connection?\n\n"
       + "The school's AI features will immediately stop working.\n"
       + "The stored API key will be permanently removed from the active database.\n"
+      + "This does not revoke the key with Google or Microsoft; revoke it in the provider portal if it should no longer work.\n"
       + "The school will have to enter a new API key and complete all confirmations again to reactivate AI.\n"
       + "Student work and existing learning records will not be deleted.",
     )) {
@@ -1944,11 +1952,9 @@ export default function TeacherSettings() {
         method: "DELETE",
         body: JSON.stringify({}),
       });
-      setAiSettings(await apiFetch("/teacher/org/ai-settings"));
-      setAiForm({ aiProvider: null, aiKey: "", azureEndpoint: "" });
-      setAiApprovals({ schoolAuthorised: false, termsAccepted: false, ukProcessingConfirmed: false });
-      setAiCompliance({ policyVersion: "", evidenceReference: "", reviewDate: "" });
+      clearAiDraft();
       setShowAiForm(false);
+      setAiSettings(await apiFetch("/teacher/org/ai-settings"));
       toast({
         title: "AI connection disabled",
         description: "The stored API key was removed. Re-enter a key and complete all confirmations to enable AI again.",
@@ -2208,6 +2214,40 @@ export default function TeacherSettings() {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     } finally {
       setTogglingAdmin(null);
+    }
+  };
+
+  const handleSafeguardingReviewerChange = async (t: OrgTeacher, canReviewSafeguarding: boolean) => {
+    setSafeguardingReviewerSaving(t.id);
+    try {
+      await apiFetch(`/teacher/org/teacher/${t.id}/safeguarding-reviewer`, {
+        method: "PUT",
+        body: JSON.stringify({
+          canReviewSafeguarding,
+          ...(canReviewSafeguarding
+            ? {
+                confirmation: "I confirm that this member of staff is authorised by the school to review safeguarding concerns within e-Assisted Climb.",
+              }
+            : {}),
+        }),
+      });
+      setOrgTeachers((current) => current.map((entry) => (
+        entry.id === t.id ? { ...entry, canReviewSafeguarding } : entry
+      )));
+      setSafeguardingReviewerConfirming(null);
+      setSafeguardingReviewerConfirmed(false);
+      toast({
+        title: canReviewSafeguarding ? "Safeguarding reviewer assigned" : "Reviewer access removed",
+        description: t.name,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Unable to update safeguarding reviewer access",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setSafeguardingReviewerSaving(null);
     }
   };
 
@@ -3255,6 +3295,14 @@ export default function TeacherSettings() {
                       <p className="font-medium text-sm">
                         {t.name}
                         {t.schoolAdminRole && <span className="ml-2 text-xs text-blue-600 font-normal">{t.schoolAdminRole === "master" ? "School Admin" : "School Sub-admin"}</span>}
+                        {t.canReviewSafeguarding && (
+                          <span
+                            data-testid={`status-safeguarding-reviewer-${t.id}`}
+                            className="ml-2 text-xs text-emerald-700 font-normal"
+                          >
+                            Safeguarding Reviewer
+                          </span>
+                        )}
                         {t.accountStatus === "active" && t.mustChangePassword && <span className="ml-2 text-xs text-amber-600 font-normal">Must change password</span>}
                         {t.accountStatus === "active" && !t.totpEnabled && <span className="ml-2 text-xs text-amber-600 font-normal">Authenticator setup required</span>}
                         {t.accountStatus === "active" && isLocked(t) && <span className="ml-2 text-xs text-red-600 font-normal">Locked</span>}
@@ -3325,6 +3373,67 @@ export default function TeacherSettings() {
                             >
                               {togglingAdmin === t.id ? "Saving…" : t.schoolAdminRole === "subadmin" ? "Remove Sub-admin" : "Make Sub-admin"}
                             </button>
+                          )}
+                          {isSchoolMaster && (t.canReviewSafeguarding || (t.accountStatus === "active" && t.approvalStatus === "approved")) && (
+                            t.canReviewSafeguarding ? (
+                              <button
+                                type="button"
+                                data-testid={`button-remove-safeguarding-reviewer-${t.id}`}
+                                onClick={() => void handleSafeguardingReviewerChange(t, false)}
+                                disabled={safeguardingReviewerSaving === t.id}
+                                className="rounded-xl border border-rose-200 px-3 py-1.5 text-xs text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-50"
+                              >
+                                {safeguardingReviewerSaving === t.id ? "Saving…" : "Remove reviewer access"}
+                              </button>
+                            ) : safeguardingReviewerConfirming === t.id ? (
+                              <div className="basis-full rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                                <label className="flex items-start gap-2 text-xs leading-5 text-emerald-950">
+                                  <input
+                                    type="checkbox"
+                                    data-testid={`checkbox-authorize-safeguarding-reviewer-${t.id}`}
+                                    checked={safeguardingReviewerConfirmed}
+                                    onChange={(event) => setSafeguardingReviewerConfirmed(event.target.checked)}
+                                    className="mt-0.5"
+                                  />
+                                  <span>I confirm that this member of staff is authorised by the school to review safeguarding concerns within e-Assisted Climb.</span>
+                                </label>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    data-testid={`button-confirm-safeguarding-reviewer-${t.id}`}
+                                    onClick={() => void handleSafeguardingReviewerChange(t, true)}
+                                    disabled={!safeguardingReviewerConfirmed || safeguardingReviewerSaving === t.id}
+                                    className="rounded-xl bg-emerald-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {safeguardingReviewerSaving === t.id ? "Saving…" : "Confirm reviewer assignment"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSafeguardingReviewerConfirming(null);
+                                      setSafeguardingReviewerConfirmed(false);
+                                    }}
+                                    disabled={safeguardingReviewerSaving === t.id}
+                                    className="rounded-xl border border-neutral-300 px-3 py-1.5 text-xs text-neutral-700 hover:bg-white disabled:opacity-50"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                data-testid={`button-assign-safeguarding-reviewer-${t.id}`}
+                                onClick={() => {
+                                  setSafeguardingReviewerConfirming(t.id);
+                                  setSafeguardingReviewerConfirmed(false);
+                                }}
+                                disabled={safeguardingReviewerSaving === t.id}
+                                className="rounded-xl border border-emerald-200 px-3 py-1.5 text-xs text-emerald-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                              >
+                                Make Safeguarding Reviewer
+                              </button>
+                            )
                           )}
                           <button
                             onClick={() => handleGenerateReset(t.id)}
@@ -4397,6 +4506,9 @@ export default function TeacherSettings() {
                         placeholder="https://your-resource.openai.azure.com"
                         className="w-full rounded-2xl border border-neutral-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-black/10 text-sm"
                       />
+                      <p className="mt-1 text-xs text-neutral-500">
+                        Deploy the model in Azure with the deployment name <span className="font-mono">gpt-4o</span>. Enter the resource endpoint only, without an API path.
+                      </p>
                     </div>
                   )}
                   <div className="space-y-3">
@@ -4475,14 +4587,17 @@ export default function TeacherSettings() {
                     {showAiForm && (
                       <button
                         type="button"
-                        onClick={() => setShowAiForm(false)}
+                        onClick={() => {
+                          clearAiDraft();
+                          setShowAiForm(false);
+                        }}
                         className="rounded-2xl border border-neutral-300 px-6 py-2.5 text-sm hover:bg-neutral-50 transition-colors"
                       >
                         Cancel
                       </button>
                     )}
                   </div>
-                   <p className="text-xs text-neutral-400">The key is encrypted before storage and is never readable by teachers or students. AI stays unavailable until these three confirmations are saved. Changing the provider or key requires fresh approval.</p>
+                    <p className="text-xs text-neutral-400">The key is encrypted before storage and is never returned to the browser after submission or shown to teachers or students. AI stays unavailable until these three confirmations are saved. Changing the provider or key requires fresh approval. Replacing or disabling a key does not revoke it with Google or Microsoft; revoke it in the provider portal when no longer needed.</p>
                 </form>
               )
             )}

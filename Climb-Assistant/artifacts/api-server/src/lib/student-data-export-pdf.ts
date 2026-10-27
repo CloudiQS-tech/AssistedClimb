@@ -32,11 +32,48 @@ const SECURITY_KEYS = new Set([
   "pinHash",
   "sessionNonce",
   "apiKey",
+  "apiKeyEncrypted",
+  "aiKey",
+  "aiKeyEncrypted",
+  "aiKeySecretRef",
+  "aiKeyMasked",
+  "aiCredentialEncryptionKey",
+  "azureApiKey",
+  "geminiApiKey",
+  "openaiApiKey",
   "providerCredentials",
+  "secretString",
+  "secretBinary",
+  "secretName",
+  "secretId",
+  "secretArn",
   "systemPrompt",
   "developerInstructions",
   "internalModeration",
 ]);
+
+const NORMALISED_SECURITY_KEYS = new Set([
+  ...[...SECURITY_KEYS].map((key) => key.toLowerCase().replace(/[^a-z0-9]/g, "")),
+  "credentials",
+  "credential",
+  "authorization",
+]);
+
+const isSecurityKey = (key: string) =>
+  NORMALISED_SECURITY_KEYS.has(key.toLowerCase().replace(/[^a-z0-9]/g, ""));
+
+export function sanitiseStudentDataExportPayload<T extends Record<string, unknown>>(payload: T): T {
+  const sanitise = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(sanitise);
+    if (value instanceof Date || value === null || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => !isSecurityKey(key))
+        .map(([key, child]) => [key, sanitise(child)]),
+    );
+  };
+  return sanitise(payload) as T;
+}
 
 const displayLabel = (key: string) =>
   key
@@ -286,14 +323,14 @@ const createPdfBuffer = (payload: StudentDataExportPayload): Promise<Buffer> =>
       }
       subheading(label);
       Object.entries(value as ExportRecord).forEach(([key, child]) => {
-        if (!SECURITY_KEYS.has(key) && hasValue(child)) nested(displayLabel(key), child, depth + 1);
+        if (!isSecurityKey(key) && hasValue(child)) nested(displayLabel(key), child, depth + 1);
       });
     };
 
     const additional = (record: ExportRecord, consumed: string[], heading = "Additional saved content") => {
       const consumedKeys = new Set(consumed);
       const entries = Object.entries(record).filter(([key, value]) =>
-        !consumedKeys.has(key) && !SECURITY_KEYS.has(key) && key !== "id" && hasValue(value),
+        !consumedKeys.has(key) && !isSecurityKey(key) && key !== "id" && hasValue(value),
       );
       if (entries.length === 0) return;
       subheading(heading);
@@ -317,7 +354,7 @@ const createPdfBuffer = (payload: StudentDataExportPayload): Promise<Buffer> =>
       if (typeof value === "object") {
         subheading(label);
         Object.entries(value as ExportRecord).forEach(([key, child]) => {
-          if (!SECURITY_KEYS.has(key)) structured(displayLabel(key), child, depth + 1);
+          if (!isSecurityKey(key)) structured(displayLabel(key), child, depth + 1);
         });
         return;
       }

@@ -17,6 +17,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.700.0",
     "@google/genai": "^2.7.0",
     "@google/generative-ai": "^0.24.1",
     "@swc/helpers": "^0.5.23",

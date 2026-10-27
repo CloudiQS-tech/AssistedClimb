@@ -166,6 +166,16 @@ export default function TeacherDashboard() {
             <Link href="/teacher/assignments" className="text-neutral-500 hover:text-black transition-colors" data-testid="link-assignments">
               Assignments
             </Link>
+            {teacher?.canReviewSafeguarding && (
+              <Link href="/teacher/safeguarding" className="text-neutral-500 hover:text-black transition-colors" data-testid="link-safeguarding-review">
+                Safeguarding review
+              </Link>
+            )}
+            {teacher?.schoolAdminRole === "master" && (
+              <Link href="/teacher/safeguarding-admin" className="text-neutral-500 hover:text-black transition-colors" data-testid="link-safeguarding-access">
+                Safeguarding access
+              </Link>
+            )}
             <Link href="/teacher/settings" className="text-neutral-500 hover:text-black transition-colors" data-testid="link-settings">
               {teacher?.schoolAdminRole ? "School settings" : "Account"}
             </Link>

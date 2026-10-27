@@ -11,6 +11,7 @@ import {
 } from "./lib/session-cookie";
 import { PREVIEW_SESSION_HEADER, resolvePreviewStudentSession, resolvePreviewTeacherSession } from "./lib/preview-session";
 import {
+  getSessionIdleTimeoutMs,
   SESSION_ABSOLUTE_TIMEOUT_MS,
   SESSION_IDLE_TIMEOUT_MS,
   SESSION_IDLE_TIMEOUT_SECONDS,
@@ -247,9 +248,16 @@ app.use(async (req, res, next) => {
   const now = Date.now();
   const startedAt = req.session.sessionStartedAt ?? now;
   const lastActivityAt = req.session.lastActivityAt ?? startedAt;
+  const role = req.session.studentSessionId
+    ? "student"
+    : req.session.teacherId
+      ? "teacher"
+      : "admin";
+  const idleTimeoutMs = getSessionIdleTimeoutMs(role);
+  req.session.cookie.maxAge = idleTimeoutMs;
   if (
     now - startedAt >= SESSION_ABSOLUTE_TIMEOUT_MS
-    || now - lastActivityAt >= SESSION_IDLE_TIMEOUT_MS
+    || now - lastActivityAt >= idleTimeoutMs
   ) {
     try {
       await regenerateAnonymousSessionPreservingSiteAccess(req);

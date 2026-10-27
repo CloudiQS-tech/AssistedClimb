@@ -9,6 +9,8 @@ import StudentJoin from "@/pages/student-join";
 import Climb from "@/pages/climb";
 import TeacherLogin from "@/pages/teacher-login";
 import TeacherDashboard from "@/pages/teacher-dashboard";
+import TeacherSafeguardingAdmin from "@/pages/teacher-safeguarding-admin";
+import TeacherSafeguardingReview from "@/pages/teacher-safeguarding-review";
 import TeacherArchive from "@/pages/teacher-archive";
 import TeacherClass from "@/pages/teacher-class";
 import TeacherStudentDetail from "@/pages/teacher-student-detail";
@@ -51,6 +53,8 @@ function Router() {
       <Route path="/teacher/class/:classId" component={TeacherClass} />
       {import.meta.env.DEV && <Route path="/dev-autologin" component={DevAutoLogin} />}
       <Route path="/teacher/settings" component={TeacherSettings} />
+      <Route path="/teacher/safeguarding-admin" component={TeacherSafeguardingAdmin} />
+      <Route path="/teacher/safeguarding" component={TeacherSafeguardingReview} />
       <Route path="/teacher/change-password" component={TeacherChangePassword} />
       <Route path="/reset-password" component={ResetPassword} />
       <Route path="/forgot-password" component={ForgotPassword} />

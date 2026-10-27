@@ -14,8 +14,11 @@ export interface TeacherProfile {
   isItAdmin: boolean;
   /** @nullable */
   schoolAdminRole?: TeacherProfileSchoolAdminRole;
+  canReviewSafeguarding: boolean;
   /** @nullable */
   organisationId?: number | null;
+  mustChangePassword: boolean;
+  totpEnabled: boolean;
   emailVerified: boolean;
   createdAt: Date;
 }

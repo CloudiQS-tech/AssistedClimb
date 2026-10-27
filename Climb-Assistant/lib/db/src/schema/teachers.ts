@@ -15,6 +15,7 @@ export const teachersTable = pgTable("teachers", {
   name: text("name").notNull(),
   isItAdmin: boolean("is_it_admin").notNull().default(false),
   schoolAdminRole: text("school_admin_role", { enum: schoolAdminRoles }),
+  canReviewSafeguarding: boolean("can_review_safeguarding").notNull().default(false),
   accountStatus: text("account_status", { enum: teacherAccountStatuses }).notNull().default("active"),
   accountStatusChangedAt: timestamp("account_status_changed_at", { withTimezone: true }),
   approvalStatus: text("approval_status", { enum: teacherApprovalStatuses }).notNull().default("approved"),

@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { eq, sql, and, desc, lt, gte, ne, asc, inArray, ilike, isNull, isNotNull, or } from "drizzle-orm";
 import {
   db,
@@ -48,10 +48,21 @@ import { recordDeletionTombstones } from "../../lib/deletion-ledger";
 import { requireTeacher } from "../../middlewares/teacherAuth";
 import { hashPasswordResetToken, resetTeacherTotpAndSessionsInTransaction, terminateTeacherSessions } from "../../lib/teacher-security";
 import { synthesiseAssessment, synthesiseClassInsights, synthesiseClassActivityInsights, synthesiseStudentActivityInsights, synthesiseStudentInsight, synthesiseClassJourneyAnalysis, generateFormativeFeedback, generateSummativePerStage, generateTaskSuggestion, parseAnswerFeedback, generateDevelopmentAnalysis, developmentProviderEvidence, isCurrentDevelopmentAnalysisReport, StudentInsightTruncationError, STUDENT_INSIGHT_PROMPT_VERSION, type AnswerFeedback, type OrgAiConfig } from "../../lib/ai";
-import { encrypt, maskApiKey, decrypt } from "../../lib/crypto";
+import { decryptAiCredential } from "../../lib/crypto";
+import { normalizeApprovedAzureOpenAiEndpoint } from "../../lib/azure-endpoint";
+import {
+  createAiCredentialSecret,
+  getAiCredentialSecret,
+  invalidateAiCredentialSecret,
+} from "../../lib/ai-credential-secret-store";
+import { enqueueAiCredentialSecretCleanup } from "../../lib/ai-credential-secret-cleanup-queue";
+import { cleanupAiCredentialSecretIfUnreferenced } from "../../lib/ai-credential-secret-safety";
 import { getTaskDeadlineState, isValidTaskDueDate, withTaskDeadlineState } from "../../lib/task-deadline";
 import { admitTaskResearchRequest } from "../../lib/task-research-admission";
-import { renderStudentDataExportPdf } from "../../lib/student-data-export-pdf";
+import {
+  renderStudentDataExportPdf,
+  sanitiseStudentDataExportPayload,
+} from "../../lib/student-data-export-pdf";
 import { renderDevelopmentAnalysisPdf } from "../../lib/development-analysis-pdf";
 import { renderStudentInsightPdf } from "../../lib/student-insight-pdf";
 import { buildDevelopmentEvidence, buildDevelopmentClassAggregate, buildStudentInsightActivityComparison, compareClimbSnapshots, compareFinalAnswers, finalAnswerFromSnapshot } from "../../lib/development-analysis";
@@ -62,6 +73,7 @@ import { hasCompleteStudentInsightFeedbackCoverage, joinStudentInsightResponse }
 import { finalAnswerReadableText } from "../../lib/final-answer-format";
 import { renderTextExportPdf } from "../../lib/text-export-pdf";
 import { analyseThinkingChoices, thinkingChoicesText } from "../../lib/thinking-choice-analysis";
+import safeguardingRouter from "./safeguarding";
 
 function formatDateOnly(value: string): string {
   const date = new Date(`${value}T12:00:00Z`);
@@ -291,8 +303,10 @@ async function runDevelopmentAnalysis(
   let generated: Awaited<ReturnType<typeof generateDevelopmentAnalysis>>;
   try {
     const [organisation] = await db.select({
+      organisationId: organisationsTable.id,
       aiProvider: organisationsTable.aiProvider,
       aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
+      aiKeySecretRef: organisationsTable.aiKeySecretRef,
       azureEndpoint: organisationsTable.azureEndpoint,
       aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged,
       aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed,
@@ -717,6 +731,7 @@ function getAuditReportWhere(organisationId: number, filters: AuditReportFilters
   const conditions = [
     eq(auditLogTable.organisationId, organisationId),
     ne(auditLogTable.action, SCHOOL_AUDIT_REPORT_EXPORTED),
+    sql`${auditLogTable.action} NOT LIKE 'safeguarding.review_item.%'`,
   ];
   if (from) conditions.push(gte(auditLogTable.createdAt, from));
   if (toExclusive) conditions.push(lt(auditLogTable.createdAt, toExclusive));
@@ -2783,8 +2798,10 @@ router.post(
     if (req.teacher!.organisationId) {
       const [org] = await db
         .select({
+          organisationId: organisationsTable.id,
           aiProvider: organisationsTable.aiProvider,
           aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
+          aiKeySecretRef: organisationsTable.aiKeySecretRef,
           azureEndpoint: organisationsTable.azureEndpoint,
           aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged,
           aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed,
@@ -3238,8 +3255,10 @@ router.post(
       if (req.teacher!.organisationId) {
         const [org] = await db
           .select({
+            organisationId: organisationsTable.id,
             aiProvider: organisationsTable.aiProvider,
             aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
+            aiKeySecretRef: organisationsTable.aiKeySecretRef,
             azureEndpoint: organisationsTable.azureEndpoint,
             aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged,
             aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed,
@@ -4067,8 +4086,10 @@ router.post(
     if (req.teacher!.organisationId) {
       const [orgRow] = await db
         .select({
+          organisationId: organisationsTable.id,
           aiProvider: organisationsTable.aiProvider,
           aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
+          aiKeySecretRef: organisationsTable.aiKeySecretRef,
           azureEndpoint: organisationsTable.azureEndpoint,
           aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged,
           aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed,
@@ -4414,8 +4435,10 @@ router.post(
     if (req.teacher!.organisationId) {
       const [orgRow] = await db
         .select({
+          organisationId: organisationsTable.id,
           aiProvider: organisationsTable.aiProvider,
           aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
+          aiKeySecretRef: organisationsTable.aiKeySecretRef,
           azureEndpoint: organisationsTable.azureEndpoint,
           aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged,
           aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed,
@@ -5765,8 +5788,10 @@ router.post(
     if (req.teacher!.organisationId) {
       const [orgRow] = await db
         .select({
+          organisationId: organisationsTable.id,
           aiProvider: organisationsTable.aiProvider,
           aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
+          aiKeySecretRef: organisationsTable.aiKeySecretRef,
           azureEndpoint: organisationsTable.azureEndpoint,
           aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged,
           aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed,
@@ -5974,7 +5999,7 @@ router.post(
     let orgConfigForInsights: OrgAiConfig | null = null;
     if (req.teacher!.organisationId) {
       const [orgRow] = await db
-        .select({ aiProvider: organisationsTable.aiProvider, aiKeyEncrypted: organisationsTable.aiKeyEncrypted, azureEndpoint: organisationsTable.azureEndpoint, aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged, aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed, aiSchoolPoliciesConfirmed: organisationsTable.aiSchoolPoliciesConfirmed, aiDataProcessingRegion: organisationsTable.aiDataProcessingRegion })
+        .select({ organisationId: organisationsTable.id, aiProvider: organisationsTable.aiProvider, aiKeyEncrypted: organisationsTable.aiKeyEncrypted, aiKeySecretRef: organisationsTable.aiKeySecretRef, azureEndpoint: organisationsTable.azureEndpoint, aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged, aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed, aiSchoolPoliciesConfirmed: organisationsTable.aiSchoolPoliciesConfirmed, aiDataProcessingRegion: organisationsTable.aiDataProcessingRegion })
         .from(organisationsTable)
         .where(eq(organisationsTable.id, req.teacher!.organisationId));
       if (orgRow) orgConfigForInsights = orgRow;
@@ -6377,7 +6402,7 @@ router.post(
     let orgConfig: OrgAiConfig | null = null;
     if (req.teacher!.organisationId) {
       const [org] = await db
-        .select({ aiProvider: organisationsTable.aiProvider, aiKeyEncrypted: organisationsTable.aiKeyEncrypted, azureEndpoint: organisationsTable.azureEndpoint, aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged, aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed, aiSchoolPoliciesConfirmed: organisationsTable.aiSchoolPoliciesConfirmed, aiDataProcessingRegion: organisationsTable.aiDataProcessingRegion })
+        .select({ organisationId: organisationsTable.id, aiProvider: organisationsTable.aiProvider, aiKeyEncrypted: organisationsTable.aiKeyEncrypted, aiKeySecretRef: organisationsTable.aiKeySecretRef, azureEndpoint: organisationsTable.azureEndpoint, aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged, aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed, aiSchoolPoliciesConfirmed: organisationsTable.aiSchoolPoliciesConfirmed, aiDataProcessingRegion: organisationsTable.aiDataProcessingRegion })
         .from(organisationsTable)
         .where(eq(organisationsTable.id, req.teacher!.organisationId));
       if (org) orgConfig = org;
@@ -6482,7 +6507,7 @@ router.post(
     let orgConfig: OrgAiConfig | null = null;
     if (req.teacher!.organisationId) {
       const [org] = await db
-        .select({ aiProvider: organisationsTable.aiProvider, aiKeyEncrypted: organisationsTable.aiKeyEncrypted, azureEndpoint: organisationsTable.azureEndpoint, aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged, aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed, aiSchoolPoliciesConfirmed: organisationsTable.aiSchoolPoliciesConfirmed, aiDataProcessingRegion: organisationsTable.aiDataProcessingRegion })
+        .select({ organisationId: organisationsTable.id, aiProvider: organisationsTable.aiProvider, aiKeyEncrypted: organisationsTable.aiKeyEncrypted, aiKeySecretRef: organisationsTable.aiKeySecretRef, azureEndpoint: organisationsTable.azureEndpoint, aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged, aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed, aiSchoolPoliciesConfirmed: organisationsTable.aiSchoolPoliciesConfirmed, aiDataProcessingRegion: organisationsTable.aiDataProcessingRegion })
         .from(organisationsTable)
         .where(eq(organisationsTable.id, req.teacher!.organisationId));
       if (org) orgConfig = org;
@@ -6597,7 +6622,7 @@ router.post(
     let orgConfig: OrgAiConfig | null = null;
     if (req.teacher!.organisationId) {
       const [org] = await db
-        .select({ aiProvider: organisationsTable.aiProvider, aiKeyEncrypted: organisationsTable.aiKeyEncrypted, azureEndpoint: organisationsTable.azureEndpoint, aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged, aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed, aiSchoolPoliciesConfirmed: organisationsTable.aiSchoolPoliciesConfirmed, aiDataProcessingRegion: organisationsTable.aiDataProcessingRegion })
+        .select({ organisationId: organisationsTable.id, aiProvider: organisationsTable.aiProvider, aiKeyEncrypted: organisationsTable.aiKeyEncrypted, aiKeySecretRef: organisationsTable.aiKeySecretRef, azureEndpoint: organisationsTable.azureEndpoint, aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged, aiDataRetentionNoTrainingConfirmed: organisationsTable.aiDataRetentionNoTrainingConfirmed, aiSchoolPoliciesConfirmed: organisationsTable.aiSchoolPoliciesConfirmed, aiDataProcessingRegion: organisationsTable.aiDataProcessingRegion })
         .from(organisationsTable)
         .where(eq(organisationsTable.id, req.teacher!.organisationId));
       if (org) orgConfig = org;
@@ -8389,8 +8414,9 @@ router.get(
             "unrelated security and infrastructure logs",
           ],
         };
+        const exportPayload = sanitiseStudentDataExportPayload(payload);
         const pdf = exportFormat === "readable"
-          ? await renderStudentDataExportPdf(payload)
+          ? await renderStudentDataExportPdf(exportPayload)
           : null;
 
         if (shouldRecordExport) {
@@ -8420,7 +8446,7 @@ router.get(
         }
         return {
           kind: "export" as const,
-          payload,
+          payload: exportPayload,
           pdf,
         };
       });
@@ -8614,6 +8640,7 @@ router.get(
 
     const [org] = await db
       .select({
+        aiKeySecretRef: organisationsTable.aiKeySecretRef,
         aiProvider: organisationsTable.aiProvider,
         aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
         azureEndpoint: organisationsTable.azureEndpoint,
@@ -8636,12 +8663,9 @@ router.get(
       return;
     }
 
-    const masked = org.aiKeyEncrypted ? maskApiKey(decrypt(org.aiKeyEncrypted)) : null;
-
     res.json({
-      configured: !!org.aiKeyEncrypted,
+      configured: !!org.aiKeyEncrypted || !!org.aiKeySecretRef,
       aiProvider: org.aiProvider,
-      aiKeyMasked: masked,
       azureEndpoint: org.azureEndpoint,
       dataProcessingAcknowledged: org.aiDataProcessingAcknowledged,
       dataProcessingAcknowledgedAt: org.aiDataProcessingAcknowledgedAt,
@@ -8660,7 +8684,10 @@ router.get(
 const UpdateOrgAiSettingsBody = z.object({
   aiProvider: z.enum(["gemini", "azure"]),
   aiKey: z.string().min(1),
-  azureEndpoint: z.string().trim().url().optional(),
+  azureEndpoint: z.string().trim().url().refine(
+    (value) => normalizeApprovedAzureOpenAiEndpoint(value) !== null,
+    { message: "Use an HTTPS Azure OpenAI or Azure AI resource endpoint." },
+  ).optional(),
   dataProcessingAcknowledged: z.literal(true),
   dataProcessingRegionConfirmed: z.literal(true),
   dataProcessingPolicyVersion: z.string().trim().max(160).optional(),
@@ -8674,6 +8701,12 @@ const UpdateOrgAiSettingsBody = z.object({
     z.string().date().optional(),
   ),
 });
+
+function aiCredentialValuesEqual(left: string, right: string): boolean {
+  const leftHash = createHash("sha256").update(left, "utf8").digest();
+  const rightHash = createHash("sha256").update(right, "utf8").digest();
+  return timingSafeEqual(leftHash, rightHash);
+}
 
 router.put(
   "/teacher/org/ai-settings",
@@ -8703,17 +8736,23 @@ router.put(
       dataProcessingReviewDate,
     } = parsed.data;
 
-    if (aiProvider === "azure" && !azureEndpoint) {
+    const normalizedAzureEndpoint = azureEndpoint
+      ? normalizeApprovedAzureOpenAiEndpoint(azureEndpoint)
+      : null;
+    if (aiProvider === "azure" && !normalizedAzureEndpoint) {
       res.status(400).json({ error: "azureEndpoint required for Azure provider" });
       return;
     }
+    const storedAzureEndpoint = aiProvider === "azure" ? normalizedAzureEndpoint : null;
 
-    const encrypted = encrypt(aiKey);
     const approvalRecordedAt = new Date();
     const reviewDate = dataProcessingReviewDate
       ? new Date(`${dataProcessingReviewDate}T00:00:00.000Z`)
       : null;
 
+    let createdSecretRef: string | null = null;
+    let previousSecretRef: string | null = null;
+    let updatedSecretRef: string | null = null;
     let org;
     try {
       org = await db.transaction(async (tx) => {
@@ -8721,18 +8760,37 @@ router.put(
           .select({
             aiProvider: organisationsTable.aiProvider,
             aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
+            aiKeySecretRef: organisationsTable.aiKeySecretRef,
             azureEndpoint: organisationsTable.azureEndpoint,
             aiDataProcessingAcknowledged: organisationsTable.aiDataProcessingAcknowledged,
           })
           .from(organisationsTable)
-          .where(eq(organisationsTable.id, orgId));
+          .where(eq(organisationsTable.id, orgId))
+          .for("update");
 
-        const credentialChanged = existing?.aiKeyEncrypted
-          ? decrypt(existing.aiKeyEncrypted) !== aiKey
-          : Boolean(existing?.aiKeyEncrypted) !== Boolean(aiKey);
-        const configurationChanged = Boolean(existing?.aiDataProcessingAcknowledged) && (
-          existing?.aiProvider !== aiProvider
-          || (existing?.azureEndpoint ?? null) !== (azureEndpoint ?? null)
+        if (!existing) return null;
+
+        previousSecretRef = existing.aiKeySecretRef;
+        const existingCredential = existing.aiKeySecretRef
+          ? await getAiCredentialSecret(orgId, existing.aiKeySecretRef)
+          : existing.aiKeyEncrypted
+            ? decryptAiCredential(existing.aiKeyEncrypted)
+            : null;
+        const credentialChanged = existingCredential === null
+          || !aiCredentialValuesEqual(existingCredential, aiKey);
+        let aiKeySecretRef = existing.aiKeySecretRef;
+        if (!aiKeySecretRef || credentialChanged) {
+          aiKeySecretRef = await createAiCredentialSecret(orgId, aiKey);
+          createdSecretRef = aiKeySecretRef;
+        }
+        updatedSecretRef = aiKeySecretRef;
+        if (existing.aiKeySecretRef && aiKeySecretRef !== existing.aiKeySecretRef) {
+          await enqueueAiCredentialSecretCleanup(tx, orgId, existing.aiKeySecretRef);
+        }
+
+        const configurationChanged = Boolean(existing.aiDataProcessingAcknowledged) && (
+          existing.aiProvider !== aiProvider
+          || (existing.azureEndpoint ?? null) !== storedAzureEndpoint
           || credentialChanged
         );
 
@@ -8750,8 +8808,9 @@ router.put(
           .update(organisationsTable)
           .set({
             aiProvider,
-            aiKeyEncrypted: encrypted,
-            azureEndpoint: azureEndpoint ?? null,
+            aiKeyEncrypted: null,
+            aiKeySecretRef,
+            azureEndpoint: storedAzureEndpoint,
             aiDataProcessingAcknowledged: true,
             aiDataProcessingAcknowledgedAt: approvalRecordedAt,
             aiDataProcessingAcknowledgedByTeacherId: req.teacher!.id,
@@ -8794,19 +8853,35 @@ router.put(
         return updated;
       });
     } catch {
-      res.status(503).json({ error: "AI approval could not be saved because its audit record could not be stored." });
+      if (createdSecretRef) {
+        try {
+          await cleanupAiCredentialSecretIfUnreferenced(orgId, createdSecretRef);
+        } catch {
+          // If the transaction outcome cannot be checked, leave the secret untouched.
+        }
+      }
+      res.status(503).json({ error: "AI approval could not be saved because secure credential storage or its audit record was unavailable." });
       return;
     }
 
     if (!org) {
+      if (createdSecretRef) {
+        try {
+          await cleanupAiCredentialSecretIfUnreferenced(orgId, createdSecretRef);
+        } catch {
+          // The record is absent; a cleanup failure does not expose the credential.
+        }
+      }
       res.status(404).json({ error: "Organisation not found" });
       return;
+    }
+    if (previousSecretRef && previousSecretRef !== updatedSecretRef) {
+      invalidateAiCredentialSecret(orgId, previousSecretRef);
     }
 
     res.json({
       configured: true,
       aiProvider: org.aiProvider,
-      aiKeyMasked: maskApiKey(aiKey),
       dataProcessingAcknowledged: org.aiDataProcessingAcknowledged,
       dataProcessingAcknowledgedAt: org.aiDataProcessingAcknowledgedAt,
       dataProcessingReviewDate: org.aiDataProcessingReviewDate,
@@ -8825,13 +8900,17 @@ router.delete(
       return;
     }
 
-    let disabled: { previousAiProvider: string | null } | null;
+    let disabled: {
+      previousAiProvider: string | null;
+      previousAiKeySecretRef: string | null;
+    } | null;
     try {
       disabled = await db.transaction(async (tx) => {
         const [existing] = await tx
           .select({
             aiProvider: organisationsTable.aiProvider,
             aiKeyEncrypted: organisationsTable.aiKeyEncrypted,
+            aiKeySecretRef: organisationsTable.aiKeySecretRef,
           })
           .from(organisationsTable)
           .where(eq(organisationsTable.id, orgId))
@@ -8839,11 +8918,16 @@ router.delete(
 
         if (!existing) return null;
 
+        if (existing.aiKeySecretRef) {
+          await enqueueAiCredentialSecretCleanup(tx, orgId, existing.aiKeySecretRef);
+        }
+
         await tx
           .update(organisationsTable)
           .set({
             aiProvider: null,
             aiKeyEncrypted: null,
+            aiKeySecretRef: null,
             azureEndpoint: null,
             aiDataProcessingAcknowledged: false,
             aiDataProcessingAcknowledgedAt: null,
@@ -8863,13 +8947,16 @@ router.delete(
           action: "organisation.ai_connection_disabled",
           metadata: {
             previousAiProvider: existing.aiProvider,
-            credentialRemoved: Boolean(existing.aiKeyEncrypted),
+            credentialRemoved: Boolean(existing.aiKeyEncrypted || existing.aiKeySecretRef),
             reason: "school_master_requested",
           },
           ipAddress: req.ip,
         });
 
-        return { previousAiProvider: existing.aiProvider };
+        return {
+          previousAiProvider: existing.aiProvider,
+          previousAiKeySecretRef: existing.aiKeySecretRef,
+        };
       });
     } catch {
       res.status(503).json({ error: "AI connection could not be disabled because its audit record could not be stored." });
@@ -8880,11 +8967,13 @@ router.delete(
       res.status(404).json({ error: "Organisation not found" });
       return;
     }
+    if (disabled.previousAiKeySecretRef) {
+      invalidateAiCredentialSecret(orgId, disabled.previousAiKeySecretRef);
+    }
 
     res.json({
       configured: false,
       aiProvider: null,
-      aiKeyMasked: null,
       azureEndpoint: null,
       dataProcessingAcknowledged: false,
       dataProcessingAcknowledgedAt: null,
@@ -10067,6 +10156,7 @@ router.get(
           email: teachersTable.email,
           isItAdmin: teachersTable.isItAdmin,
           schoolAdminRole: teachersTable.schoolAdminRole,
+          canReviewSafeguarding: teachersTable.canReviewSafeguarding,
           accountStatus: teachersTable.accountStatus,
           accountStatusChangedAt: teachersTable.accountStatusChangedAt,
           approvalStatus: teachersTable.approvalStatus,
@@ -11839,5 +11929,7 @@ router.patch(
     res.json({ ok: true, isItAdmin: schoolAdminRole === "subadmin", schoolAdminRole });
   },
 );
+
+router.use(safeguardingRouter);
 
 export default router;

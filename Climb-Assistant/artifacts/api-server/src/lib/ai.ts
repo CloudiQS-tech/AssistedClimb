@@ -1,6 +1,33 @@
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
-import { decrypt } from "./crypto";
+import { createAzureOpenAiClient } from "./azure-openai-client";
+import { decryptAiCredential } from "./crypto";
+import { getAiCredentialSecret } from "./ai-credential-secret-store";
+import { requireApprovedAzureOpenAiEndpoint } from "./azure-endpoint";
+import {
+  AI_OUTPUT_SAFETY_FALLBACK,
+  isAzureOutputSafetyBlocked,
+  isGeminiOutputSafetyBlocked,
+  normalizeAzurePromptSafetySignals,
+  normalizeGeminiPromptSafetySignals,
+  providerOutputBlockedSignal,
+  type NormalizedProviderSignal,
+} from "./safeguarding-screening";
+
+type OpenAiClientOptions = {
+  timeout?: number;
+  maxRetries?: number;
+};
+
+function createProviderOpenAiClient(
+  apiKey: string,
+  azureEndpoint: string | undefined,
+  options: OpenAiClientOptions = {},
+): OpenAI {
+  return azureEndpoint
+    ? createAzureOpenAiClient(apiKey, azureEndpoint, options)
+    : new OpenAI({ apiKey, ...options });
+}
 
 /** Strip markdown formatting characters the AI sometimes outputs despite instructions. */
 function stripMarkdown(text: string): string {
@@ -181,7 +208,7 @@ async function resolveGroundingRedirect(raw: unknown): Promise<unknown> {
 
 async function researchTaskSources(
   input: TaskSuggestionInput,
-  credentials: ReturnType<typeof resolveAiCredentials>,
+  credentials: Awaited<ReturnType<typeof resolveAiCredentials>>,
 ): Promise<{ sources: TaskResearchSource[]; status: "complete" | "no_approved_sources" | "unavailable"; notice: string }> {
   const { provider, apiKey, azureEndpoint } = credentials;
   if (azureEndpoint || (provider !== "gemini" && provider !== "openai")) {
@@ -314,9 +341,7 @@ function publicAiProviderError(error: unknown): Error {
   const message = isTemporaryAiProviderError(error)
     ? "AI is temporarily busy. Please wait a moment and try again."
     : "AI task generation is temporarily unavailable. Please try again.";
-  const safeError = new Error(message);
-  safeError.cause = error;
-  return safeError;
+  return new Error(message);
 }
 
 function assertBoundedStudentChatInput(message: string, history: ChatMessage[]): void {
@@ -384,8 +409,10 @@ export interface ConversationContext {
 }
 
 export interface OrgAiConfig {
+  organisationId?: number | null;
   aiProvider: string | null;
   aiKeyEncrypted: string | null;
+  aiKeySecretRef?: string | null;
   azureEndpoint: string | null;
   aiDataProcessingAcknowledged: boolean;
   aiDataRetentionNoTrainingConfirmed?: boolean;
@@ -536,12 +563,13 @@ export function parseAnswerFeedback(raw: string): AnswerFeedback {
   };
 }
 
-function resolveAiCredentials(orgConfig?: OrgAiConfig | null): {
+async function resolveAiCredentials(orgConfig?: OrgAiConfig | null): Promise<{
   provider: string;
   apiKey: string;
   azureEndpoint: string | undefined;
-} {
-  if (!orgConfig?.aiProvider || !orgConfig.aiKeyEncrypted) {
+}> {
+  const hasSecretReference = Boolean(orgConfig?.aiKeySecretRef);
+  if (!orgConfig?.aiProvider || (!hasSecretReference && !orgConfig.aiKeyEncrypted)) {
     throw new Error("AI is not configured for this school. Ask the school IT administrator to configure an approved AI provider.");
   }
   if (
@@ -551,11 +579,20 @@ function resolveAiCredentials(orgConfig?: OrgAiConfig | null): {
   ) {
     throw new Error("AI is unavailable until the school IT administrator records all provider approvals for UK processing.");
   }
-  const apiKey = decrypt(orgConfig.aiKeyEncrypted);
+  const apiKey = hasSecretReference
+    ? await getAiCredentialSecret(orgConfig.organisationId ?? 0, orgConfig.aiKeySecretRef!)
+    : decryptAiCredential(orgConfig.aiKeyEncrypted!);
+  const provider = orgConfig.aiProvider.toLowerCase();
+  const configuredEndpoint = orgConfig.azureEndpoint ?? process.env.AZURE_ENDPOINT;
+  let azureEndpoint: string | undefined;
+  if (provider === "azure") {
+    if (!configuredEndpoint) throw new Error("Azure endpoint not configured");
+    azureEndpoint = requireApprovedAzureOpenAiEndpoint(configuredEndpoint);
+  }
   return {
-    provider: orgConfig.aiProvider.toLowerCase(),
+    provider,
     apiKey,
-    azureEndpoint: orgConfig.azureEndpoint ?? undefined,
+    azureEndpoint,
   };
 }
 
@@ -955,7 +992,7 @@ export async function generateTaskSuggestion(
   input: TaskSuggestionInput,
   orgConfig?: OrgAiConfig | null,
 ): Promise<TaskSuggestion> {
-  const credentials = resolveAiCredentials(orgConfig);
+  const credentials = await resolveAiCredentials(orgConfig);
   const { provider, apiKey, azureEndpoint } = credentials;
   const research = await researchTaskSources(input, credentials);
   const selected = input.learningFramework === "bloom" ? input.bloomLevels : input.knowledgeDimensions;
@@ -1004,22 +1041,10 @@ Respond only with valid JSON:
       });
       return result.text ?? "{}";
     }
-    const client = new OpenAI(
-      azureEndpoint
-        ? {
-            apiKey,
-            baseURL: azureEndpoint,
-            defaultHeaders: { "api-key": apiKey },
-            defaultQuery: { "api-version": "2024-02-01" },
-            maxRetries: 0,
-            timeout: AI_TASK_GENERATION_ATTEMPT_TIMEOUT_MS,
-          }
-        : {
-            apiKey,
-            maxRetries: 0,
-            timeout: AI_TASK_GENERATION_ATTEMPT_TIMEOUT_MS,
-          },
-    );
+    const client = createProviderOpenAiClient(apiKey, azureEndpoint, {
+      maxRetries: 0,
+      timeout: AI_TASK_GENERATION_ATTEMPT_TIMEOUT_MS,
+    });
     const completion = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
@@ -1312,7 +1337,7 @@ export async function generateTorchSuggestions(
   mapContent?: MapContent | null,
 ): Promise<TorchSuggestionsResult> {
   try {
-    const { provider, apiKey } = resolveAiCredentials(orgConfig);
+    const { provider, apiKey } = await resolveAiCredentials(orgConfig);
     const prompt = minimiseAiText(SUGGESTION_PROMPT(task, mapContent), MAX_AI_SYSTEM_PROMPT_LENGTH);
     let raw = "";
 
@@ -1333,9 +1358,13 @@ export async function generateTorchSuggestions(
       });
       raw = boundedAiResponse(result.text);
     } else if (provider === "azure") {
-      const endpoint = orgConfig?.azureEndpoint ?? process.env.AZURE_ENDPOINT;
-      if (!endpoint) throw new Error("Azure endpoint not configured");
-      const client = new OpenAI({ apiKey, baseURL: endpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" }, timeout: AI_TORCH_SUGGESTION_TIMEOUT_MS, maxRetries: 0 });
+      const configuredEndpoint = orgConfig?.azureEndpoint ?? process.env.AZURE_ENDPOINT;
+      if (!configuredEndpoint) throw new Error("Azure endpoint not configured");
+      const endpoint = requireApprovedAzureOpenAiEndpoint(configuredEndpoint);
+      const client = createAzureOpenAiClient(apiKey, endpoint, {
+        timeout: AI_TORCH_SUGGESTION_TIMEOUT_MS,
+        maxRetries: 0,
+      });
       const completion = await client.chat.completions.create({
         model: "gpt-4o",
         messages: [{ role: "user", content: prompt }],
@@ -1365,22 +1394,23 @@ export async function callAI(
   orgConfig?: OrgAiConfig | null,
   mapContent?: MapContent | null,
   convCtx?: ConversationContext,
+  onProviderSafetySignal?: (signal: NormalizedProviderSignal) => void,
 ): Promise<string> {
   // The HTTP schema applies these same limits. Keep them at the provider
   // boundary too, so another server-side caller cannot accidentally turn an
   // unbounded value into a paid inference request.
   assertBoundedStudentChatInput(message, history);
-  const { provider, apiKey, azureEndpoint } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey, azureEndpoint } = await resolveAiCredentials(orgConfig);
 
   if (provider === "gemini") {
-    return callGemini(apiKey, message, history, task, bloomLevel, mapContent, convCtx);
+    return callGemini(apiKey, message, history, task, bloomLevel, mapContent, convCtx, onProviderSafetySignal);
   }
 
   if (provider === "azure") {
     if (!azureEndpoint) {
       throw new Error("Azure endpoint not configured");
     }
-    return callAzureOpenAI(apiKey, azureEndpoint, message, history, task, bloomLevel, mapContent, convCtx);
+    return callAzureOpenAI(apiKey, azureEndpoint, message, history, task, bloomLevel, mapContent, convCtx, onProviderSafetySignal);
   }
 
   throw new Error(`Unknown AI provider: "${provider}". Use "gemini" or "azure".`);
@@ -1394,6 +1424,7 @@ async function callGemini(
   bloomLevel?: string | null,
   mapContent?: MapContent | null,
   convCtx?: ConversationContext,
+  onProviderSafetySignal?: (signal: NormalizedProviderSignal) => void,
 ): Promise<string> {
   const ai = new GoogleGenAI({
     apiKey,
@@ -1421,6 +1452,21 @@ async function callGemini(
   });
 
   const result = await chat.sendMessage({ message: minimiseAiText(message) });
+  for (const signal of normalizeGeminiPromptSafetySignals(result)) {
+    try {
+      onProviderSafetySignal?.(signal);
+    } catch {
+      // Capturing an optional review signal must never change tutor behaviour.
+    }
+  }
+  if (isGeminiOutputSafetyBlocked(result)) {
+    try {
+      onProviderSafetySignal?.(providerOutputBlockedSignal("gemini"));
+    } catch {
+      // Recording an output block must not expose the provider's blocked text.
+    }
+    return AI_OUTPUT_SAFETY_FALLBACK;
+  }
   return normaliseTutorResponse(
     result.text,
     task,
@@ -1442,7 +1488,7 @@ export async function callAIOneShot(
     inputMaxLength?: number;
   } = {},
 ): Promise<string> {
-  const { provider, apiKey, azureEndpoint } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey, azureEndpoint } = await resolveAiCredentials(orgConfig);
   const maxOutputTokens = Math.min(
     options.maxOutputTokens ?? MAX_AI_OUTPUT_TOKENS,
     MAX_AI_STRUCTURED_OUTPUT_TOKENS,
@@ -1468,11 +1514,10 @@ export async function callAIOneShot(
     return boundedAiResponse(result.text);
   }
 
-  const client = new OpenAI(
-    azureEndpoint
-      ? { apiKey, baseURL: azureEndpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" }, timeout: AI_REQUEST_TIMEOUT_MS, maxRetries: 0 }
-      : { apiKey, timeout: AI_REQUEST_TIMEOUT_MS, maxRetries: 0 },
-  );
+  const client = createProviderOpenAiClient(apiKey, azureEndpoint, {
+    timeout: AI_REQUEST_TIMEOUT_MS,
+    maxRetries: 0,
+  });
   const completion = await client.chat.completions.create({
     model: "gpt-4o",
     messages: [
@@ -1876,7 +1921,7 @@ export async function synthesiseClassInsights(
   teachingRecommendations: string[];
   nextLessonPlan: string[];
 }> {
-  const { provider, apiKey } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey } = await resolveAiCredentials(orgConfig);
 
   const total = input.studentCount;
   const stagePct = (stage: string) => total > 0 ? Math.round(((input.stageCompletion[stage] ?? 0) / total) * 100) : 0;
@@ -1968,8 +2013,10 @@ Respond ONLY in this exact JSON format (no markdown, no extra keys):
       });
       return result.text ?? "{}";
     }
-    const endpoint = orgConfig?.azureEndpoint ?? process.env.AZURE_ENDPOINT;
-    const client = new OpenAI(endpoint ? { apiKey, baseURL: endpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" } } : { apiKey });
+    const configuredEndpoint = orgConfig?.azureEndpoint ?? process.env.AZURE_ENDPOINT;
+    if (!configuredEndpoint) throw new Error("Azure endpoint not configured");
+    const endpoint = requireApprovedAzureOpenAiEndpoint(configuredEndpoint);
+    const client = createAzureOpenAiClient(apiKey, endpoint);
     const completion = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [{ role: "user", content: requestPrompt }],
@@ -2168,7 +2215,7 @@ export async function synthesiseStudentInsight(
   otherRecordedDevelopment?: string[];
   responseToAiFeedback?: StudentInsightAiResponse;
 }> {
-  const { provider, apiKey, azureEndpoint } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey, azureEndpoint } = await resolveAiCredentials(orgConfig);
   const model = provider === "gemini" ? "gemini-2.5-flash" : "gpt-4o";
   const stageText = input.stages
     .map((stage) => `=== ${stage.stage} ===
@@ -2318,11 +2365,7 @@ ${summativeResponseSchema}
     if ((result as any).candidates?.[0]?.finishReason === "MAX_TOKENS") throw new StudentInsightTruncationError();
     raw = result.text ?? "{}";
   } else {
-    const client = new OpenAI(
-      azureEndpoint
-        ? { apiKey, baseURL: azureEndpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" } }
-        : { apiKey },
-    );
+    const client = createProviderOpenAiClient(apiKey, azureEndpoint);
     const completion = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
@@ -2556,7 +2599,7 @@ export async function synthesiseClassJourneyAnalysis(
   notableDifferences: string[];
   reflectionAndFuturePlanning: string[];
 }> {
-  const { provider, apiKey, azureEndpoint } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey, azureEndpoint } = await resolveAiCredentials(orgConfig);
   const evidenceText = minimiseAiText(JSON.stringify(input.evidence), 14_000);
   const prompt = `Write the concise qualitative sections of a teacher-facing Class Journey Analysis.
 
@@ -2602,11 +2645,7 @@ Rules:
       });
       raw = result.text ?? "{}";
     } else {
-      const client = new OpenAI(
-        azureEndpoint
-          ? { apiKey, baseURL: azureEndpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" } }
-          : { apiKey },
-      );
+      const client = createProviderOpenAiClient(apiKey, azureEndpoint);
       const completion = await client.chat.completions.create({
         model: "gpt-4o",
         messages: [{ role: "user", content: prompt }],
@@ -2667,7 +2706,7 @@ export async function synthesiseClassActivityInsights(
   comparisons: string[];
   researchConsiderations: string[];
 }> {
-  const { provider, apiKey } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey } = await resolveAiCredentials(orgConfig);
   const stageText = input.stageStats
     .map((stage) => `  ${stage.stage}: ${stage.totalSeconds}s total; ${stage.averageStudentSeconds}s average per enrolled student; ${stage.sharePercent}% of recorded time`)
     .join("\n");
@@ -2721,10 +2760,10 @@ Respond ONLY in this exact JSON format:
     });
     raw = result.text ?? "{}";
   } else {
-    const endpoint = orgConfig?.azureEndpoint ?? process.env.AZURE_ENDPOINT;
-    const client = new OpenAI(endpoint
-      ? { apiKey, baseURL: endpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" } }
-      : { apiKey });
+    const configuredEndpoint = orgConfig?.azureEndpoint ?? process.env.AZURE_ENDPOINT;
+    if (!configuredEndpoint) throw new Error("Azure endpoint not configured");
+    const endpoint = requireApprovedAzureOpenAiEndpoint(configuredEndpoint);
+    const client = createAzureOpenAiClient(apiKey, endpoint);
     const completion = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
@@ -2763,7 +2802,7 @@ export async function synthesiseStudentActivityInsights(
   stagePatterns: string[];
   researchConsiderations: string[];
 }> {
-  const { provider, apiKey } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey } = await resolveAiCredentials(orgConfig);
   const stageText = input.stageStats
     .map((stage) => `  ${stage.stage}: ${stage.totalSeconds}s total; ${stage.sharePercent}% of this student's recorded time`)
     .join("\n");
@@ -2814,10 +2853,10 @@ Respond ONLY in this exact JSON format:
     });
     raw = result.text ?? "{}";
   } else {
-    const endpoint = orgConfig?.azureEndpoint ?? process.env.AZURE_ENDPOINT;
-    const client = new OpenAI(endpoint
-      ? { apiKey, baseURL: endpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" } }
-      : { apiKey });
+    const configuredEndpoint = orgConfig?.azureEndpoint ?? process.env.AZURE_ENDPOINT;
+    if (!configuredEndpoint) throw new Error("Azure endpoint not configured");
+    const endpoint = requireApprovedAzureOpenAiEndpoint(configuredEndpoint);
+    const client = createAzureOpenAiClient(apiKey, endpoint);
     const completion = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
@@ -2849,7 +2888,7 @@ export async function synthesiseAssessment(
   orgConfig?: OrgAiConfig | null,
   frameworkContext?: LearningFrameworkContext | null,
 ): Promise<{ comment: string; grade: string }> {
-  const { provider, apiKey, azureEndpoint } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey, azureEndpoint } = await resolveAiCredentials(orgConfig);
 
   const prompt = buildSynthesisPrompt(_studentName, taskTitle, taskQuestion, stageFeedbacks, frameworkContext);
 
@@ -2864,7 +2903,7 @@ export async function synthesiseAssessment(
     });
     raw = result.text ?? "{}";
   } else {
-    const client = new OpenAI(azureEndpoint ? { apiKey, baseURL: azureEndpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" } } : { apiKey });
+    const client = createProviderOpenAiClient(apiKey, azureEndpoint);
     const completion = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
@@ -2930,7 +2969,7 @@ export async function generateFormativeFeedback(
   );
   if (stagesWithContent.length === 0) return result;
 
-  const { provider, apiKey, azureEndpoint } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey, azureEndpoint } = await resolveAiCredentials(orgConfig);
 
   const stageBlock = stagesWithContent
     .map((s) => `=== ${s.stage} ===\n${minimiseAiText(s.content)}`)
@@ -2974,11 +3013,7 @@ ${stageKeys.map((k) => `  "${k}": "..."`).join(",\n")}
     });
     raw = result.text ?? "{}";
   } else {
-    const client = new OpenAI(
-      azureEndpoint
-        ? { apiKey, baseURL: azureEndpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" } }
-        : { apiKey },
-    );
+    const client = createProviderOpenAiClient(apiKey, azureEndpoint);
     const completion = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
@@ -3018,7 +3053,7 @@ export async function generateSummativePerStage(
   );
   if (stagesWithContent.length === 0) return result;
 
-  const { provider, apiKey, azureEndpoint } = resolveAiCredentials(orgConfig);
+  const { provider, apiKey, azureEndpoint } = await resolveAiCredentials(orgConfig);
 
   const stageBlock = stagesWithContent
     .map((s) => `=== ${s.stage} ===\n${minimiseAiText(s.content)}`)
@@ -3075,11 +3110,7 @@ ${stageKeys.map((k) => `  "${k}": { "grade": "developing", "comment": "..." }`).
     });
     raw = result.text ?? "{}";
   } else {
-    const client = new OpenAI(
-      azureEndpoint
-        ? { apiKey, baseURL: azureEndpoint, defaultHeaders: { "api-key": apiKey }, defaultQuery: { "api-version": "2024-02-01" } }
-        : { apiKey },
-    );
+    const client = createProviderOpenAiClient(apiKey, azureEndpoint);
     const completion = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
@@ -3112,15 +3143,13 @@ async function callAzureOpenAI(
   bloomLevel?: string | null,
   mapContent?: MapContent | null,
   convCtx?: ConversationContext,
+  onProviderSafetySignal?: (signal: NormalizedProviderSignal) => void,
 ): Promise<string> {
-  const client = new OpenAI({
+  const client = createAzureOpenAiClient(
     apiKey,
-    baseURL: azureEndpoint,
-    defaultHeaders: { "api-key": apiKey },
-    defaultQuery: { "api-version": "2024-02-01" },
-    timeout: AI_REQUEST_TIMEOUT_MS,
-    maxRetries: 0,
-  });
+    requireApprovedAzureOpenAiEndpoint(azureEndpoint),
+    { timeout: AI_REQUEST_TIMEOUT_MS, maxRetries: 0 },
+  );
 
   const systemPrompt = boundedSystemPrompt(task, bloomLevel, mapContent, convCtx);
 
@@ -3140,6 +3169,22 @@ async function callAzureOpenAI(
     response_format: { type: "json_object" },
   });
 
+  for (const signal of normalizeAzurePromptSafetySignals(completion)) {
+    try {
+      onProviderSafetySignal?.(signal);
+    } catch {
+      // Capturing an optional review signal must never change tutor behaviour.
+    }
+  }
+
+  if (isAzureOutputSafetyBlocked(completion)) {
+    try {
+      onProviderSafetySignal?.(providerOutputBlockedSignal("azure"));
+    } catch {
+      // Recording an output block must not expose the provider's blocked text.
+    }
+    return AI_OUTPUT_SAFETY_FALLBACK;
+  }
   return normaliseTutorResponse(
     completion.choices[0]?.message?.content,
     task,
